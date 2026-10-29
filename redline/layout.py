@@ -8,6 +8,7 @@ string are ignored), hence the swaps.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 
 from .model import RedlineError
@@ -107,7 +108,11 @@ def _checksum(body: str) -> str:
 
 
 def layout_string(name: str, ids_by_role: dict[str, str], extra: list[str], w: int, h: int) -> tuple[str, list[str]]:
-    tree = _prune(PRESETS[name][1], set(ids_by_role))
+    return tree_layout_string(PRESETS[name][1], ids_by_role, extra, w, h)
+
+
+def tree_layout_string(node, ids_by_role: dict[str, str], extra: list[str], w: int, h: int) -> tuple[str, list[str]]:
+    tree = _prune(node, set(ids_by_role))
     if tree is None:
         raise RedlineError("no redline panes found")
     ids = dict(ids_by_role)
@@ -131,11 +136,35 @@ def apply(name: str, window: str | None = None) -> str:
         return "toggled zoom on the paper pane"
     if name == "auto":
         return apply(auto_choice(window), window)
+    _arrange(window, PRESETS[name][1], current, by_role)
+    _tmux("set-option", "-w", "-t", window, "@redline_layout", name)
+    return f"layout {name}: {PRESETS[name][0]}"
+
+
+def _leaf_ids(current: list[tuple[str, str]]) -> dict[str, str]:
+    """Leaf names -> pane ids: roles, and "#k" for the k-th pane without a role."""
+    ids = {role: pid for pid, role in current if role in ("paper", "agent", "preview")}
+    plain = [pid for pid, role in current if pid not in ids.values()]
+    ids.update({f"#{k}": pid for k, pid in enumerate(plain)})
+    return ids
+
+
+def _leaves(node) -> set[str]:
+    if node is None:
+        return set()
+    if isinstance(node, str):
+        return {node}
+    return set().union(*(_leaves(n) for n, _ in node[1]))
+
+
+def _arrange(window: str, node, current: list[tuple[str, str]], ids: dict[str, str]) -> None:
     if _tmux("display", "-p", "-t", window, "#{window_zoomed_flag}") == "1":
         _tmux("resize-pane", "-Z", "-t", current[0][0])  # unzoom first
-    extra = [pid for pid, role in current if pid not in by_role.values()]
+    used = _leaves(_prune(node, set(ids)))
+    ids = {leaf: pid for leaf, pid in ids.items() if leaf in used}
+    extra = [pid for pid, _ in current if pid not in ids.values()]  # panes the tree doesn't know
     w, h = (int(v) for v in _tmux("display", "-p", "-t", window, "#{window_width} #{window_height}").split())
-    lay, order = layout_string(name, by_role, extra, w, h)
+    lay, order = tree_layout_string(node, ids, extra, w, h)
     # put panes into the order the layout assigns them
     cur = [pid for pid, _ in current]
     for i, pid in enumerate(order):
@@ -144,8 +173,85 @@ def apply(name: str, window: str | None = None) -> str:
             _tmux("swap-pane", "-d", "-s", pid, "-t", cur[i])
             cur[i], cur[j] = cur[j], cur[i]
     _tmux("select-layout", "-t", window, lay)
-    _tmux("set-option", "-w", "-t", window, "@redline_layout", name)
-    return f"layout {name}: {PRESETS[name][0]}"
+
+
+# ---- saving / restoring the arrangement -------------------------------------------
+def _from_json(node: dict, names: dict[str, str]):
+    if node.get("t") == "p":
+        return names.get(node.get("I", ""), "")
+    d = "h" if node.get("t") == "h" else "v"
+    key = "w" if d == "h" else "h"
+    return (d, [(_from_json(c, names), int(c.get(key, 1)) or 1) for c in node.get("c", [])])
+
+
+def _from_legacy(text: str, names: dict[str, str]):
+    """Parse the classic `csum,WxH,X,Y{...}` layout (pane ids are positional)."""
+    body = text.split(",", 1)[1]
+    pos = 0
+    order = list(names.values())
+    counter = iter(range(10_000))
+
+    def cell():
+        nonlocal pos
+        m = re.compile(r"(\d+)x(\d+),\d+,\d+").match(body, pos)
+        w, h = int(m.group(1)), int(m.group(2))
+        pos = m.end()
+        if pos < len(body) and body[pos] in "{[":
+            d = "h" if body[pos] == "{" else "v"
+            close = "}" if d == "h" else "]"
+            pos += 1
+            kids = []
+            while True:
+                node, cw, ch = cell()
+                kids.append((node, cw if d == "h" else ch))
+                if body[pos] == ",":
+                    pos += 1
+                    continue
+                assert body[pos] == close
+                pos += 1
+                break
+            return (d, kids), w, h
+        m = re.compile(r",(\d+)").match(body, pos)
+        pos = m.end()
+        k = next(counter)
+        return (order[k] if k < len(order) else ""), w, h
+
+    return cell()[0]
+
+
+def capture(window: str) -> dict:
+    """The window's arrangement as a role tree with relative sizes."""
+    current = panes(window)
+    names = {pid: leaf for leaf, pid in _leaf_ids(current).items()}
+    raw = _tmux("display", "-p", "-t", window, "#{window_layout}")
+    if raw.startswith("{"):
+        import json
+        tree = _from_json(json.loads(raw)["L"], names)
+    else:
+        tree = _from_legacy(raw, {pid: names[pid] for pid, _ in current})
+    try:
+        preset = _tmux("show-options", "-wv", "-t", window, "@redline_layout")
+    except RedlineError:
+        preset = ""
+    return {"tree": tree, "preset": preset}
+
+
+def _as_node(t):
+    """JSON lists back into the (direction, [(node, weight)]) tuples."""
+    if isinstance(t, str):
+        return t
+    d, kids = t
+    return (d, [(_as_node(n), w) for n, w in kids])
+
+
+def restore(window: str, saved: dict) -> str:
+    current = panes(window)
+    ids = _leaf_ids(current)
+    node = _as_node(saved["tree"])
+    _arrange(window, node, current, ids)
+    if saved.get("preset"):
+        _tmux("set-option", "-w", "-t", window, "@redline_layout", saved["preset"])
+    return "restored the saved layout"
 
 
 def auto_choice(window: str) -> str:

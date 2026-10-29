@@ -114,6 +114,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--status", action="store_true", help="only report what would be closed")
     p.add_argument("--json", action="store_true")
     p.add_argument("--yes", action="store_true", help="close without asking")
+    p = sub.add_parser("save-layout", help="remember the current pane arrangement for this paper")
+    p.add_argument("--session", help="tmux session (default: the current one)")
     p = sub.add_parser("open", help="start the tmux workspace")
     p.add_argument("dir", nargs="?")
     p.add_argument("--no-attach", action="store_true")
@@ -158,6 +160,13 @@ def _run(a: argparse.Namespace) -> int:
                 print("not on Overleaf yet: " + ", ".join(st["unpushed"]))
             if input("Close all of them? [y/N] ").strip().lower() == "y":
                 LA.quit_now(session)
+        return 0
+    if a.cmd == "save-layout":
+        from . import launcher as LA
+        session = a.session or LA._session_of_caller()
+        root = LA._session_root(session) or config.find_root()
+        LA.save_layout(session, root)
+        print(f"saved to {root / '.redline' / 'layout.json'}")
         return 0
     if a.cmd == "layout":
         from . import layout as L

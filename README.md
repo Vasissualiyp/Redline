@@ -110,7 +110,12 @@ nothing restarts, and the PDF re-renders at the new size.
 | `paper-top` | paper on top, agent \| PDF below |
 | `focus` | toggle the paper pane fullscreen (tmux zoom) |
 
-`layout = "..."` in `.redline.toml` picks the arrangement at start (default `auto`). To switch from
+Quitting with `prefix Q` (or `redline quit`) saves the exact arrangement of the
+paper and code windows, including pane sizes you set by hand, to
+`.redline/layout.json`. The next `redline open` of that paper restores it,
+scaled to the terminal you open in. `redline save-layout` saves it without
+quitting; deleting the file goes back to the preset.
+Otherwise `layout = "..."` in `.redline.toml` picks the arrangement at start (default `auto`). To switch from
 any pane, bind a key in `tmux.conf`, e.g.
 `bind-key M-l run-shell "redline layout --next --session '#{session_name}'"`.
 That needs `redline` on tmux's PATH.

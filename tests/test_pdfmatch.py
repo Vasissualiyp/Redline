@@ -59,3 +59,21 @@ def test_stitch_keeps_both_highlights_in_view():
     assert img.height < 1584
     (x0, y0, x1, y1), (u0, v0, u1, v1) = hl
     assert 0 <= y0 < y1 <= img.height and 0 <= v0 < v1 <= img.height and y1 < v0
+
+
+def test_caption_words_are_not_glued_on():
+    # "...formation in the middle." (caption) precedes the continuation in reading order
+    page = words_from(["Fig. 11 profiles preventing star formation in the middle.",
+                       "but through a numerical coupling rather than through starlight"])
+    rects = locate(page, 1, "that in the code follows the radiation of the new protostar but through "
+                            "a numerical coupling rather than through starlight", None)
+    assert len(rects) == 1 and rects[0].y0 == 112.0  # only the real continuation
+
+
+def test_jump_over_a_figure_skips_it():
+    page = words_from(["the gas follows the radiation of the new protostar",
+                       "Fig 3 axis label caption words that are not part of it",
+                       "but through a numerical coupling rather than starlight"])
+    rects = locate(page, 1, "the gas follows the radiation of the new protostar but through "
+                            "a numerical coupling rather than starlight", None)
+    assert [r.y0 for r in rects] == [100.0, 124.0]  # the caption line in between is not marked

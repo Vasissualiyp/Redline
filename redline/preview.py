@@ -160,11 +160,14 @@ class Pane:
             y0 = int(max(0, min(img.height - px_h, cy - px_h / 2)))
             img = img.crop((x0, y0, x0 + px_w, y0 + px_h))
         elif hl and img.height > px_h:
-            # fit-width page taller than the pane: scroll so the highlight is visible
+            # fit-width page taller than the pane: scroll so the highlight is
+            # visible; if it does not fit (e.g. it runs from the bottom of one
+            # column to the top of the next) show everything, scaled down
             top, bottom = min(b for _, b, _, _ in hl), max(d for _, _, _, d in hl)
-            y0 = top - px_h / 3 if bottom - top < px_h * 2 / 3 else top - px_h / 12
-            y0 = int(max(0, min(img.height - px_h, y0)))
-            img = img.crop((0, y0, img.width, y0 + px_h))
+            if bottom - top <= px_h * 0.9:
+                y0 = top - px_h / 3 if bottom - top < px_h * 2 / 3 else top - px_h / 12
+                y0 = int(max(0, min(img.height - px_h, y0)))
+                img = img.crop((0, y0, img.width, y0 + px_h))
         elif img.height > px_h:
             img = img.crop((0, 0, img.width, px_h))
         png = self.tmp / "page.png"
@@ -283,7 +286,10 @@ class Pane:
             return
         counts = [b.page for b in boxes]
         main = max(set(counts), key=counts.count)
-        cand = (main, main + 1) if main + 1 in counts else (main - 1, main) if main - 1 in counts else (main,)
+        # synctex files a typeset line under the source line it starts in, so a
+        # change can begin on the previous page or end on the next one without
+        # synctex saying so: search the neighbours too
+        cand = tuple(pg for pg in (main - 1, main, main + 1) if 1 <= pg <= self.pages)
         near = [b for b in boxes if b.page in cand]
         rects = []
         if text:
@@ -292,7 +298,7 @@ class Pane:
         approximate = not rects
         if approximate:
             # excerpt not found as text (math, figure...): mark the source lines' lines
-            rects = near
+            rects = [b for b in boxes if b.page == main]
         on = sorted({r.page for r in rects})
         v.rects = rects
         v.shown = (on[0], on[1]) if len(on) >= 2 and on[1] == on[0] + 1 else ()

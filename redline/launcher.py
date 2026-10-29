@@ -141,12 +141,8 @@ def open_workspace(root: Path | None, attach: bool = True) -> int:
                           "-n", "code", "-c", code, "nvim .")
         _tmux("split-window", "-h", "-l", "35%", "-t", code_pane, "-c", code)
         _tmux("select-window", "-t", paper)
-        if proj.cfg.layout and proj.cfg.layout != "default":  # the panes start as "default"
-            from . import layout as _layout
-            try:
-                _layout.apply(proj.cfg.layout, _tmux("display", "-p", "-t", editor, "#{window_id}"))
-            except Exception as e:  # a bad preset name must not stop the session
-                print(f"layout {proj.cfg.layout!r}: {e}", file=sys.stderr)
+        # the arrangement saved when this paper was last quit, else the preset
+        restore_layout(name, root, proj.cfg.layout)
     bind_quit_key(proj.cfg.tmux_quit_key)
     if not attach:
         print(name)
@@ -191,9 +187,66 @@ def quit_status(session: str) -> dict:
     return st
 
 
+def _windows(session: str) -> dict[str, str]:
+    """name -> window id; the window holding the paper pane is always "paper"."""
+    from . import layout as _layout
+    out = {}
+    for line in _tmux("list-windows", "-t", f"={session}", "-F", "#{window_id} #{window_name}").splitlines():
+        wid, _, name = line.partition(" ")
+        out.setdefault(name, wid)
+    try:
+        out["paper"] = _layout.find_window(f"={session}")
+    except Exception:
+        pass
+    return out
+
+
+def save_layout(session: str, root: Path) -> None:
+    """Remember the pane arrangement of the paper and code windows for this paper."""
+    from . import layout as _layout
+    saved = {}
+    for name, wid in _windows(session).items():
+        if name in ("paper", "code"):
+            try:
+                saved[name] = _layout.capture(wid)
+            except Exception:
+                continue
+    if saved:
+        (root / ".redline").mkdir(exist_ok=True)
+        (root / ".redline" / "layout.json").write_text(json.dumps(saved, indent=1))
+
+
+def restore_layout(session: str, root: Path, fallback: str) -> None:
+    from . import layout as _layout
+    path = root / ".redline" / "layout.json"
+    saved = {}
+    if path.exists():
+        try:
+            saved = json.loads(path.read_text())
+        except ValueError:
+            saved = {}
+    wins = _windows(session)
+    for name, wid in wins.items():
+        if name in saved:
+            try:
+                _layout.restore(wid, saved[name])
+                continue
+            except Exception as e:
+                print(f"saved {name} layout not restored: {e}", file=sys.stderr)
+        if name == "paper" and fallback and fallback != "default":  # panes start as "default"
+            try:
+                _layout.apply(fallback, wid)
+            except Exception as e:
+                print(f"layout {fallback!r}: {e}", file=sys.stderr)
+
+
 def quit_now(session: str) -> None:
     root = _session_root(session)
     if root is not None:
+        try:
+            save_layout(session, root)
+        except Exception as e:  # never block quitting
+            print(f"layout not saved: {e}", file=sys.stderr)
         Project.open(root).flush_editor()  # nvim writes its buffer first
     _tmux("kill-session", "-t", f"={session}")
 
