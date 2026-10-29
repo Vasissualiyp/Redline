@@ -468,7 +468,10 @@ def _run_tui(proj: Project, agent: str, argv: list[str], d: Path, names: list[st
     session = subprocess.run(["tmux", "display", "-p", "-t", pane, "#{session_id}"],
                              capture_output=True, text=True).stdout.strip()
     win = subprocess.run(["tmux", "new-window", "-P", "-F", "#{window_id}", "-t", f"{session}:",
-                          "-n", "merge", "-c", str(d), "sh " + shlex.quote(str(script))],
+                          "-n", "merge", "-c", str(d),
+                          # login shell: the agent gets the user's exported API keys
+                          f"{shlex.quote(os.environ.get('SHELL') or '/bin/sh')} -lc "
+                          + shlex.quote("exec sh " + shlex.quote(str(script)))],
                          capture_output=True, text=True, env=_clean_env())
     wid = win.stdout.strip()
     if win.returncode != 0 or not wid:

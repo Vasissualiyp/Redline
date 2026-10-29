@@ -102,6 +102,17 @@ def _shell(cmd: list[str]) -> str:
     return " ".join(shlex.quote(c) for c in cmd)
 
 
+def in_login_shell(cmd: str) -> str:
+    """Run a pane command through the user's login shell.
+
+    Commands given to tmux directly skip the shell's startup files, so
+    variables exported there (API keys for minuet, opencode, ...) would be
+    missing in nvim and the agent panes.
+    """
+    sh = os.environ.get("SHELL") or "/bin/sh"
+    return f"{shlex.quote(sh)} -lc {shlex.quote('exec ' + cmd)}"
+
+
 def open_workspace(root: Path | None, attach: bool = True) -> int:
     root = _config.find_root(root)
     _config.write_default(root)
@@ -126,19 +137,19 @@ def open_workspace(root: Path | None, attach: bool = True) -> int:
         envs = ["-e", f"REDLINE_ROOT={root}", "-e", f"REDLINE_CMD={env_prefix}{rl}"]
         cols, rows = shutil.get_terminal_size((240, 60))
         editor = _tmux("new-session", "-d", "-P", "-F", "#{pane_id}", "-s", name, "-n", "paper",
-                       "-x", str(cols), "-y", str(rows), "-c", str(root), *envs, nvim)
+                       "-x", str(cols), "-y", str(rows), "-c", str(root), *envs, in_login_shell(nvim))
         paper = f"={name}:paper"
         agent = _tmux("split-window", "-h", "-l", "40%", "-t", editor, "-c", str(root),
-                      "-P", "-F", "#{pane_id}", proj.cfg.agent)
+                      "-P", "-F", "#{pane_id}", in_login_shell(proj.cfg.agent))
         _tmux("set-option", "-p", "-t", agent, "@redline_role", "agent")
         prev = _tmux("split-window", "-v", "-l", "50%", "-t", agent, "-c", str(root),
-                     "-P", "-F", "#{pane_id}", f"{env_prefix}{rl} preview")
+                     "-P", "-F", "#{pane_id}", in_login_shell(f"{env_prefix}{rl} preview"))
         _tmux("set-option", "-p", "-t", prev, "@redline_role", "preview")
         _tmux("select-pane", "-t", editor)
         _tmux("set-option", "-p", "-t", editor, "@redline_role", "paper")
         code = proj.cfg.code_dir if proj.cfg.code_dir and Path(proj.cfg.code_dir).is_dir() else str(root)
         code_pane = _tmux("new-window", "-d", "-P", "-F", "#{pane_id}", "-t", f"={name}:",
-                          "-n", "code", "-c", code, "nvim .")
+                          "-n", "code", "-c", code, in_login_shell("nvim ."))
         _tmux("split-window", "-h", "-l", "35%", "-t", code_pane, "-c", code)
         _tmux("select-window", "-t", paper)
         # the arrangement saved when this paper was last quit, else the preset
