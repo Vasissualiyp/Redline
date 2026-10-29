@@ -61,8 +61,11 @@ gitsigns' `]c` is restored when you leave.
 | `A` `R` `M` (also visual) | accept / reject / apply markers in the section, heading or selection |
 | `K` / `gl` | details / list of all changes (Telescope) |
 | `p` / `f` | show in the PDF pane / toggle follow |
+| `s` (also visual) | verify the claim on this line / the selection, via refcheck or code |
+| `S` | send all open `% VERIFY` requests to the agent |
 | `c` / `F` | compile (errors go to quickfix) / send the errors to the agent |
-| `P` / `L` | push to / pull from Overleaf (3-way merge) |
+| `O` | **sync to Overleaf**: push if Overleaf is unchanged, otherwise pick an agent to merge first |
+| `P` / `L` | pull+merge+push / pull (3-way merge) |
 | `q` `<Esc>` `i` | leave review mode |
 
 Outside review mode:
@@ -76,6 +79,53 @@ To put the status in your statusline, use `require('redline').status()`
 (e.g. `REVIEW C12/49 · §3.2 · 2 marked`).
 
 Undo is ordinary vim undo. Accepting and rejecting are applied as buffer edits.
+
+## Verifying claims
+
+Select a claim and press `s`, then pick refcheck (Zotero PDFs), code (the
+analysis repo) or either. Redline adds a request line under the claim and,
+unless you queue it, sends the agent a task with the context:
+
+```latex
+The sink accretes at $10^{-3}\,\Msun\,\mathrm{yr^{-1}}$ \citep{abel02}.
+% VERIFY refcheck: «The sink accretes at 1e-3 Msun/yr»
+```
+
+The agent answers with `record_verification`, which replaces the request with
+`% VERIFIED <bibkey | code:path:line>: <quote or value>`. A claim the source
+contradicts gets `% REFUTED` plus a proposed correction; one it can't settle
+gets `% UNVERIFIED <reason>`. These are the same lines refcheck already writes.
+They show as ✓, ✗ and ? signs, and you can also type requests in Overleaf.
+`redline verify` prints a report.
+
+## Sync to Overleaf
+
+`O` in review mode, `<leader>jo`, `:Redline sync` or `redline sync overleaf` do this:
+
+1. Download Overleaf and compare it with the snapshot from the last sync.
+2. If Overleaf is unchanged, push after you confirm.
+3. If only Overleaf changed the files, take its version and push.
+4. If both sides changed a file, you choose who merges: `git` (offered only when
+   the merge is clean) or any agent from `[agents]`. The agent works in
+   `.redline/merge/`, which holds the file with conflict blocks and its
+   `.LOCAL`, `.BASE` and `.REMOTE` versions. It must leave no conflict markers and
+   writes `RESOLUTION.md`.
+5. Redline checks the result, replays any edits you made while the agent worked,
+   reloads nvim, and asks before pushing. The push still lints and compiles first.
+
+Agents are command lines in which `{prompt}` is replaced by the task. They come
+from `~/.config/redline/config.toml` and/or the paper's `.redline.toml`:
+
+```toml
+[agents]
+claude = ["claude", "-p", "--permission-mode", "acceptEdits", "{prompt}"]   # default
+opencode = ["opencode", "run", "{prompt}"]                                  # default
+"opencode-kimi" = ["opencode", "run", "-m", "kimi/kimi-k2", "{prompt}"]
+"claude-opus" = ["claude", "-p", "--model", "opus", "--permission-mode", "acceptEdits", "{prompt}"]
+```
+
+The chat agent can do the same through MCP: `sync_to_overleaf(agent=...)`, or it
+can resolve the workspace itself and then call `sync_finish`.
 
 ## Markers (when reviewing in Overleaf instead)
 
@@ -96,6 +146,9 @@ redline reject C12 C13
 redline lint --fix            # mbox citations, split paragraphs, move float comments, label-first captions
 redline compile [--isolate]   # latexmk into .redline/build, errors mapped to changes
 redline sync init|pull|push   # Overleaf via ols, 3-way merged; push = pull+lint+compile+ols -l
+redline sync overleaf [--agent NAME]   # push if Overleaf unchanged, else merge with an agent
+redline agents                # configured merge agents
+redline verify [requests]     # verification report / the agent task for open requests
 redline undo                  # revert the last redline write (keeps later unrelated edits)
 ```
 

@@ -10,11 +10,10 @@ response: {"id": 1, "result": {...}}  or  {"id": 1, "error": "message"}
 from __future__ import annotations
 
 import json
-import re
 import sys
 import traceback
 
-from . import author, lint, ops, select
+from . import author, lint, ops, select, verify
 from .model import Change, Document, RedlineError, TextEdit
 from .parse import parse
 from .service import describe
@@ -70,7 +69,6 @@ class Rpc:
     def parse(self, p: dict) -> dict:
         doc = self._doc(p)
         org = self._origins()
-        verified = [doc.line_of(m.start()) - 1 for m in re.finditer(r"% ?VERIFIED", doc.src)]
         return {
             "items": [_item(doc, it, org) for it in doc.items],
             "sections": [{"label": s.label, "title": s.title, "number": s.number, "level": s.level,
@@ -79,8 +77,23 @@ class Rpc:
             "orphan_markers": [{"line": m.line, "kind": m.kind, "note": m.note}
                                for m in doc.markers if m.item is None],
             "lint": [i.as_dict() for i in lint.lint(doc)],
-            "verified_lines": verified,
+            "verify": [r.as_dict() for r in verify.requests(doc)],
+            "results": [{"status": r.status, "text": r.text, "line": r.line} for r in verify.results(doc)],
         }
+
+    def add_verify(self, p: dict) -> dict:
+        doc = self._doc(p)
+        edits = verify.add_request(doc, int(p["after_line"]), p.get("method", "any"),
+                                   p.get("claim", ""), p.get("note", ""))
+        new = ops.apply(doc.src, edits)
+        req = [r for r in verify.requests(self._doc({"text": new})) if r.line == doc.line_of(edits[0].start)]
+        return {"edits": _edits(doc, edits), "id": req[0].id if req else None}
+
+    def verify_message(self, p: dict) -> dict:
+        from .service import Service
+        if not self.proj:
+            raise RedlineError("no project")
+        return {"message": Service(self.proj).verify_message(p.get("ids"), text=p["text"])}
 
     def op(self, p: dict) -> dict:
         doc = self._doc(p)

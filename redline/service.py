@@ -5,6 +5,7 @@ from . import author, ops, select
 from . import compile as _compile
 from . import lint as _lint
 from . import sync as _sync
+from . import verify as _verify
 from .model import Change, Document, RedlineError
 from .state import Project
 
@@ -220,3 +221,96 @@ class Service:
 
     def undo(self) -> str:
         return "undid: " + self.proj.undo()
+
+    # ---- sync to Overleaf -----------------------------------------------------------
+    def sync_check(self, reuse: bool = False) -> _sync.SyncCheck:
+        return _sync.check(self.proj, reuse)
+
+    def sync_to_overleaf(self, agent: str | None = None, push: bool = True, stream=None,
+                         reuse: bool = False) -> str:
+        """Push if Overleaf is unchanged since the last sync; otherwise merge first.
+
+        agent=None with a real merge needed: prepares the workspace and explains
+        the options instead of choosing for the human.
+        """
+        chk = _sync.check(self.proj, reuse)
+        out = [chk.text()]
+        if chk.remote_unchanged:
+            return "\n".join(out + [self.push_only()] if push else out)
+        if chk.both_changed:
+            names = _sync.prepare_merge(self.proj, chk)
+            if agent is None:
+                clean = all(chk.conflicts.get(f, 0) == 0 for f in chk.both_changed)
+                out.append(f"merge workspace: {_sync.merge_dir(self.proj)} ({', '.join(names)})")
+                out.append("choose who merges: " + ", ".join(self.proj.cfg.agents)
+                           + (", or git (merges cleanly)" if clean else "")
+                           + "; or resolve the files there yourself and call sync_finish")
+                return "\n".join(out)
+            if agent != "git":
+                rc = _sync.run_agent(self.proj, agent, stream)
+                if rc != 0:
+                    return "\n".join(out + [f"agent {agent} exited with {rc}; nothing applied"])
+        rep = _sync.finish_merge(self.proj, chk, use_git=agent == "git")
+        out.append(rep.text())
+        if rep.conflicts or not push:
+            return "\n".join(out)
+        return "\n".join(out + [self.push_only()])
+
+    def sync_finish(self, push: bool = True) -> str:
+        chk = _sync.load_check(self.proj)
+        rep = _sync.finish_merge(self.proj, chk)
+        out = [rep.text()]
+        if push and not rep.conflicts:
+            out.append(self.push_only())
+        return "\n".join(out)
+
+    def push_only(self) -> str:
+        return _sync.push(self.proj, skip_pull=True).text()
+
+    # ---- claim verification ------------------------------------------------------
+    def verification_requests(self) -> str:
+        doc = self.proj.doc()
+        reqs = _verify.requests(doc)
+        if not reqs:
+            return _verify.report(doc).splitlines()[0] + "; no open requests"
+        return self.verify_message([r.id for r in reqs], doc=doc)
+
+    def verify_message(self, ids: list[str] | None = None, doc=None, text: str | None = None) -> str:
+        """The task text an agent gets for open verification requests."""
+        doc = doc or self.proj.doc(text)
+        reqs = [r for r in _verify.requests(doc) if not ids or r.id in ids]
+        if not reqs:
+            raise RedlineError("no open verification requests")
+        lines = doc.src.splitlines()
+        code = self.proj.cfg.code_dir or "(no code_dir configured)"
+        out = [f"[redline] Verify {len(reqs)} claim(s). For each: check it, then call "
+               "record_verification(request_id=..., status=VERIFIED|REFUTED|UNVERIFIED, source=..., "
+               "evidence=...). If REFUTED, also propose_replace a correction with a comment.",
+               "- refcheck: only PDF-backed sources from Zotero (paper-refcheck skill rules); "
+               "source = bib key, evidence = exact quote + §/page.",
+               f"- code: read the analysis code in {code} (and its outputs); source = "
+               "code:<path>:<line>, evidence = what it computes and the value you got.",
+               "- any: whichever fits; say which in the evidence.", ""]
+        for r in reqs:
+            a = max(1, r.claim_line - 2)
+            ctx = "\n".join(f"    {n:5d}  {lines[n - 1]}" for n in range(a, (r.claim_line or r.line) + 1))
+            out.append(f"request {r.id} (method {r.method}, line {r.line})"
+                       + (f", note: {r.note}" if r.note else "") + f"\n  claim: «{r.claim}»\n{ctx}")
+        return "\n".join(out)
+
+    def record_verification(self, status: str, source: str = "", evidence: str = "",
+                            request_id: str | None = None, anchor: str | None = None,
+                            section: str | None = None) -> str:
+        def fn(doc):
+            after = None
+            if not request_id:
+                if not anchor:
+                    raise RedlineError("pass request_id, or anchor= (exact text of the claim)")
+                _, e = author.locate(doc, anchor, section)
+                after = doc.line_of(e - 1)
+            return _verify.record(doc, status, source, evidence, request_id, after)
+        self.proj.transact(fn, reason=f"verification {status}")
+        return "recorded"
+
+    def verification_report(self) -> str:
+        return _verify.report(self.proj.doc())

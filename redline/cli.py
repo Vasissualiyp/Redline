@@ -77,9 +77,21 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("compile", help="latexmk build into .redline/build")
     p.add_argument("--isolate", action="store_true")
     p.add_argument("--json", action="store_true")
-    p = sub.add_parser("sync", help="Overleaf: init | pull | push")
-    p.add_argument("action", choices=["init", "pull", "push"])
+    p = sub.add_parser("sync", help="Overleaf: init | pull | push | check | overleaf | finish")
+    p.add_argument("action", choices=["init", "pull", "push", "check", "overleaf", "finish"],
+                   help="overleaf = sync: push if Overleaf is unchanged, else merge with an agent first")
     p.add_argument("--force", action="store_true", help="push despite lint/compile errors")
+    p.add_argument("--no-pull", action="store_true", help="push without pulling/merging first")
+    p.add_argument("--agent", help="agent that resolves the merge (see `redline agents`), or git")
+    p.add_argument("--no-push", action="store_true", help="stop after merging")
+    p.add_argument("--yes", action="store_true", help="do not ask before pushing")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--reuse-download", action="store_true",
+                   help="reuse an Overleaf download made in the last 10 minutes")
+    p = sub.add_parser("agents", help="configured merge agents")
+    p.add_argument("--json", action="store_true")
+    p = sub.add_parser("verify", help="claim verification: list requests / report / agent message")
+    p.add_argument("what", choices=["requests", "report"], nargs="?", default="report")
     sub.add_parser("undo", help="revert the last redline write")
     sub.add_parser("history", help="recent redline writes")
 
@@ -172,15 +184,66 @@ def _run(a: argparse.Namespace) -> int:
         print(json.dumps(res.as_dict()) if a.json else C.format_report(res))
         return 0 if res.ok else 1
     elif a.cmd == "sync":
-        out = {"init": s.sync_init, "pull": s.pull, "push": lambda: s.push(a.force)}[a.action]()
-        print(out)
-        return 1 if "CONFLICT" in out or "not pushing" in out else 0
+        return _sync_cmd(s, a)
+    elif a.cmd == "agents":
+        names = list(proj.cfg.agents)
+        print(json.dumps(names) if a.json else "\n".join(f"{n}: {' '.join(proj.cfg.agents[n])}" for n in names))
+    elif a.cmd == "verify":
+        print(s.verification_requests() if a.what == "requests" else s.verification_report())
     elif a.cmd == "undo":
         print(s.undo())
     elif a.cmd == "history":
         for h in proj.history():
             print(f"{h['n']:5d} {h['time']} {h['reason']}")
     return 0
+
+
+def _sync_cmd(s, a: argparse.Namespace) -> int:
+    def done(out: str) -> int:
+        print(out)
+        return 1 if ("CONFLICT" in out or "not pushing" in out or "nothing applied" in out) else 0
+
+    if a.action == "init":
+        return done(s.sync_init())
+    if a.action == "pull":
+        return done(s.pull())
+    if a.action == "push":
+        return done(s.push_only() if a.no_pull else s.push(a.force))
+    if a.action == "check":
+        chk = s.sync_check(a.reuse_download)
+        print(json.dumps({**chk.as_dict(), "agents": list(s.proj.cfg.agents)}) if a.json else chk.text())
+        return 0
+    if a.action == "finish":
+        return done(s.sync_finish(push=not a.no_push))
+    # a.action == "overleaf"
+    agent = a.agent
+    if agent is None:
+        chk = s.sync_check(a.reuse_download)
+        print(chk.text())
+        if chk.remote_unchanged:
+            if not a.yes and input("Push to Overleaf? [y/N] ").strip().lower() != "y":
+                return 0
+            return done(s.push_only())
+        if chk.both_changed:
+            names = list(s.proj.cfg.agents)
+            clean = all(chk.conflicts.get(f, 0) == 0 for f in chk.both_changed)
+            opts = names + (["git"] if clean else [])
+            for i, n in enumerate(opts, 1):
+                print(f"  {i}) {n}")
+            pick = input("Who merges? number (empty = cancel): ").strip()
+            if not pick.isdigit() or not 1 <= int(pick) <= len(opts):
+                return 0
+            agent = opts[int(pick) - 1]
+    out = s.sync_to_overleaf(agent, push=False, stream=lambda ln: print(ln, end="", flush=True),
+                             reuse=True)
+    print(out)
+    if "CONFLICT" in out or "nothing applied" in out:
+        return 1
+    if a.no_push:
+        return 0
+    if not a.yes and input("Push the merged paper to Overleaf? [y/N] ").strip().lower() != "y":
+        return 0
+    return done(s.push_only())
 
 
 if __name__ == "__main__":

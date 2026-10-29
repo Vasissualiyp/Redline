@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import filecmp
 import fnmatch
+import json
+import re
 import shlex
 import shutil
 import subprocess
@@ -233,3 +235,221 @@ def push(proj: Project, force: bool = False, skip_pull: bool = False) -> SyncRep
             (base / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(root / rel, base / rel)
     return rep
+
+
+# ---- "Sync to Overleaf": push if Overleaf is unchanged, otherwise merge ------
+MERGE_MARKERS = re.compile(r"^(<{7}|={7}|>{7})( |$)", re.M)
+
+MERGE_PROMPT = """\
+You are resolving a merge between two versions of a LaTeX paper.
+Work ONLY inside this directory ({dir}); do not run ols, git or latexmk.
+
+For each file listed below there are four versions:
+  <file>         the merge result to fix: it contains git conflict blocks
+                 (<<<<<<< local ... ======= ... >>>>>>> overleaf)
+  <file>.LOCAL   our version (it may contain pending `changes`-package
+                 suggestions: \\added \\deleted \\replaced \\chcomment)
+  <file>.BASE    the version both sides started from (last sync)
+  <file>.REMOTE  the Overleaf version (coauthors edit there, and the author may
+                 have accepted/rejected suggestions in the Overleaf editor)
+
+Files: {files}
+
+Rules:
+1. Edit <file> so that it contains no conflict markers and keeps the intent of
+   BOTH sides. Compare each conflict against .BASE to see who changed what.
+2. If Overleaf accepted or rejected a suggestion (markup gone there) that is still
+   pending locally, follow Overleaf. If Overleaf edited text that is inside a
+   pending local suggestion, keep the suggestion but use Overleaf's wording.
+3. Never drop a \\chcomment, a `% VERIFIED`/`% VERIFY` line or a %Y/%N/%X marker
+   that only one side has.
+4. Keep braces balanced; do not reformat or rewrap unrelated text.
+5. Finally write a short list of what you decided per conflict to RESOLUTION.md.
+"""
+
+
+@dataclass
+class SyncCheck:
+    remote_changed: list[str] = field(default_factory=list)   # Overleaf changed since the last sync
+    local_changed: list[str] = field(default_factory=list)
+    both_changed: list[str] = field(default_factory=list)
+    conflicts: dict[str, int] = field(default_factory=dict)    # trial merge: file -> conflict blocks
+
+    @property
+    def remote_unchanged(self) -> bool:
+        return not self.remote_changed
+
+    def as_dict(self) -> dict:
+        d = self.__dict__.copy()
+        d["remote_unchanged"] = self.remote_unchanged
+        return d
+
+    def text(self) -> str:
+        if self.remote_unchanged:
+            return "Overleaf unchanged since the last sync" + (
+                f"; local changes in {', '.join(self.local_changed)}" if self.local_changed else "")
+        s = "Overleaf changed: " + ", ".join(self.remote_changed)
+        if self.both_changed:
+            s += "\nchanged on both sides: " + ", ".join(
+                f"{f} ({self.conflicts.get(f, 0)} conflict block(s))" for f in self.both_changed)
+        return s
+
+
+def _same(a: Path, b: Path) -> bool:
+    return a.exists() and b.exists() and filecmp.cmp(a, b, shallow=False)
+
+
+def check(proj: Project, reuse: bool = False) -> SyncCheck:
+    """Compare Overleaf with the base snapshot. reuse: keep a download < 10 min old."""
+    base = proj.dir / "base"
+    if not base.exists():
+        raise RedlineError("no merge base yet: run `redline sync init` once")
+    remote = proj.dir / "remote"
+    import time
+    if not (reuse and remote.exists() and time.time() - remote.stat().st_mtime < 600):
+        remote = download(proj)
+    root = proj.cfg.root
+    olignore = (root / ".olignore").read_text().splitlines() if (root / ".olignore").exists() else []
+    chk = SyncCheck()
+    proj.flush_editor()
+    for rel in sorted(set(_files(remote)) | set(_files(base))):
+        if _ignored(rel, olignore):
+            continue
+        r, b, l = remote / rel, base / rel, root / rel
+        if not r.exists() and not b.exists():
+            continue
+        if not _same(r, b) and (r.exists() or b.exists()):
+            chk.remote_changed.append(rel)
+            if l.exists() and b.exists() and not _same(l, b) and Path(rel).suffix in TEXT_EXT and r.exists():
+                chk.both_changed.append(rel)
+                merged, n = merge3(l.read_text(), b.read_text(), r.read_text())
+                chk.conflicts[rel] = _count_blocks(merged) if n else 0
+        elif l.exists() and b.exists() and not _same(l, b):
+            chk.local_changed.append(rel)
+    for rel in _files(root):
+        if Path(rel).suffix in TEXT_EXT and not _ignored(rel, olignore) and not (base / rel).exists() \
+                and rel not in chk.remote_changed:
+            chk.local_changed.append(rel)
+    return chk
+
+
+def _count_blocks(text: str) -> int:
+    return len(re.findall(r"^<{7}( |$)", text, re.M))
+
+
+def merge_dir(proj: Project) -> Path:
+    return proj.dir / "merge"
+
+
+def prepare_merge(proj: Project, chk: SyncCheck) -> list[str]:
+    """Write the merge workspace for files changed on both sides. Returns their names."""
+    d = merge_dir(proj)
+    if d.exists():
+        shutil.rmtree(d)
+    d.mkdir(parents=True)
+    root, base, remote = proj.cfg.root, proj.dir / "base", proj.dir / "remote"
+    names = []
+    for rel in chk.both_changed:
+        local_text = (root / rel).read_text()
+        base_text, remote_text = (base / rel).read_text(), (remote / rel).read_text()
+        merged, _ = merge3(local_text, base_text, remote_text, labels=("local", "base", "overleaf"))
+        name = rel.replace("/", "__")
+        for suffix, text in (("", merged), (".LOCAL", local_text), (".BASE", base_text),
+                             (".REMOTE", remote_text)):
+            (d / (name + suffix)).write_text(text)
+        names.append(name)
+    (d / "files.json").write_text(json.dumps({n: rel for n, rel in zip(names, chk.both_changed)}))
+    (d / "check.json").write_text(json.dumps(chk.__dict__))
+    (d / "INSTRUCTIONS.md").write_text(MERGE_PROMPT.format(dir=d, files=", ".join(names)))
+    return names
+
+
+def run_agent(proj: Project, agent: str, stream=None) -> int:
+    """Run a configured headless agent in the merge workspace; returns its exit code."""
+    cmd = proj.cfg.agents.get(agent)
+    if not cmd:
+        raise RedlineError(f"unknown agent {agent!r}; configured: {', '.join(proj.cfg.agents)}")
+    d = merge_dir(proj)
+    names = json.loads((d / "files.json").read_text())
+    prompt = MERGE_PROMPT.format(dir=d, files=", ".join(names))
+    argv = [a.replace("{prompt}", prompt).replace("{dir}", str(d)) for a in cmd]
+    if not shutil.which(argv[0]):
+        raise RedlineError(f"agent command {argv[0]!r} not found on PATH")
+    proc = subprocess.Popen(argv, cwd=d, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            stdin=subprocess.DEVNULL, text=True, env=_clean_env())
+    try:
+        for line in proc.stdout:
+            if stream:
+                stream(line)
+        return proc.wait(timeout=proj.cfg.merge_timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        raise RedlineError(f"agent {agent} timed out after {proj.cfg.merge_timeout}s")
+
+
+def finish_merge(proj: Project, chk: SyncCheck | None = None, use_git: bool = False) -> SyncReport:
+    """Apply the resolved workspace (or a clean git merge) and adopt Overleaf as the base."""
+    root, base, remote = proj.cfg.root, proj.dir / "base", proj.dir / "remote"
+    d = merge_dir(proj)
+    rep = SyncReport()
+    files = json.loads((d / "files.json").read_text()) if (d / "files.json").exists() else {}
+    if chk is not None:
+        both = set(chk.both_changed)
+        # files only Overleaf changed: take them as they are
+        for rel in chk.remote_changed:
+            if rel in both:
+                continue
+            r, l = remote / rel, root / rel
+            if not r.exists():
+                rep.messages.append(f"{rel}: deleted on Overleaf (kept locally)")
+                continue
+            l.parent.mkdir(parents=True, exist_ok=True)
+            if l.resolve() == proj.main.resolve():
+                cur = proj.read()
+                proj.write(r.read_text(), expect=cur, reason="take Overleaf version")
+            else:
+                shutil.copy2(r, l)
+            rep.merged.append(rel)
+    resolved: dict[str, str] = {}
+    for name, rel in files.items():
+        if use_git:
+            text, n = merge3((root / rel).read_text(), (base / rel).read_text(), (remote / rel).read_text())
+            if n:
+                raise RedlineError(f"{rel}: git cannot merge it cleanly ({n} conflicts); pick an agent")
+        else:
+            text = (d / name).read_text()
+            if MERGE_MARKERS.search(text):
+                raise RedlineError(f"{rel}: conflict markers are still in {d / name}; nothing applied")
+        from .lint import balanced
+        if Path(rel).suffix == ".tex" and not balanced(text):
+            raise RedlineError(f"{rel}: the resolved file has unbalanced braces; nothing applied")
+        resolved[rel] = text
+    for rel, text in resolved.items():
+        l = root / rel
+        snapshot = (d / (rel.replace("/", "__") + ".LOCAL"))
+        cur = l.read_text()
+        if snapshot.exists() and cur != snapshot.read_text():
+            # edited while the agent worked: replay those edits on top
+            text, n = merge3(cur, snapshot.read_text(), text)
+            if n:
+                rep.conflicts[rel] = [i + 1 for i, ln in enumerate(text.splitlines()) if ln.startswith("<<<<<<<")]
+        if l.resolve() == proj.main.resolve():
+            proj.write(text, expect=cur, reason="merge with Overleaf")
+        else:
+            l.write_text(text)
+        rep.merged.append(rel)
+    if not rep.conflicts:
+        for rel in _files(remote):
+            (base / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(remote / rel, base / rel)
+    res = d / "RESOLUTION.md"
+    if res.exists():
+        rep.messages.append("agent notes:\n" + res.read_text().strip())
+    return rep
+
+
+def load_check(proj: Project) -> SyncCheck:
+    p = merge_dir(proj) / "check.json"
+    if not p.exists():
+        raise RedlineError("no prepared merge; run the sync check first")
+    return SyncCheck(**json.loads(p.read_text()))

@@ -106,7 +106,10 @@ class Pane:
     def render(self) -> None:
         cols, rows = shutil.get_terminal_size()
         rows -= 1  # status line
+        # flush now: icat writes to the terminal directly, and a clear still
+        # sitting in Python's buffer would erase the image right after it
         sys.stdout.write("\x1b[2J\x1b[H")
+        sys.stdout.flush()
         if not self.pdf.exists():
             self._status(f"no PDF yet ({self.pdf.name}); compile from nvim with c in review mode")
             return
@@ -155,12 +158,31 @@ class Pane:
         elif img.height > px_h:
             img = img.crop((0, 0, img.width, px_h))
         img.save(png)
-        subprocess.run(["kitten", "icat", "--clear", "--transfer-mode=stream", "--passthrough=tmux",
-                        "--detection-timeout=2", "--place", f"{cols}x{rows}@0x0", "--scale-up",
-                        "--align=left", str(png)], stdin=subprocess.DEVNULL)
+        err = self._icat(png, cols, rows)
         flags = " ".join(x for x in ("follow" if v.follow else "", "crop" if v.crop else "",
                                      f"zoom {v.zoom:.1f}" if v.zoom != 1 else "") if x)
-        self._status(f"p.{v.page}/{self.pages}  {flags}  {v.status}")
+        self._status(f"icat failed: {err}" if err else f"p.{v.page}/{self.pages}  {flags}  {v.status}")
+
+    def _icat(self, png: Path, cols: int, rows: int) -> str:
+        """Draw png in the pane. Returns an error message, or "" on success.
+
+        --stdin=no matters: stdin is not a terminal here, and icat's default
+        (--stdin=detect) then reads it as a second image and refuses --place.
+        """
+        cmd = ["kitten", "icat", "--stdin=no", "--clear", "--transfer-mode=stream",
+               "--passthrough=tmux", "--place", f"{cols}x{rows}@0x0", "--scale-up",
+               "--align=left", str(png)]
+        try:
+            r = subprocess.run(cmd, stdin=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+                               timeout=30)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            msg = str(e)
+        else:
+            msg = "" if r.returncode == 0 else (r.stderr.strip() or f"exit {r.returncode}")
+        if msg:
+            with open(self.tmp / "log.txt", "a") as f:
+                f.write(f"{' '.join(cmd)}\n  -> {msg}\n")
+        return msg.splitlines()[0] if msg else ""
 
     def _status(self, text: str) -> None:
         _, rows = shutil.get_terminal_size()

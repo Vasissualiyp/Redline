@@ -33,6 +33,9 @@ function M.define_highlights()
   set("RedlineSignReplaced", { fg = yellow })
   set("RedlineSignComment", { fg = blue })
   set("RedlineVerified", { fg = green })
+  set("RedlineRefuted", { fg = red, bold = true })
+  set("RedlineUnverified", { fg = yellow })
+  set("RedlineVerifyRequest", { fg = yellow, italic = true })
 end
 
 local SIGN = {
@@ -124,11 +127,26 @@ function M.draw(buf, data, opts)
       })
     end
   end
-  for _, row in ipairs(data.verified_lines or {}) do
-    if not sign_lines[row] then
+  local RESULT_SIGN = {
+    VERIFIED = { "✓", "RedlineVerified" },
+    REFUTED = { "✗", "RedlineRefuted" },
+    UNVERIFIED = { "?", "RedlineUnverified" },
+  }
+  for _, r in ipairs(data.results or {}) do
+    local row, sg = r.line - 1, RESULT_SIGN[r.status]
+    if sg and not sign_lines[row] then
       pcall(vim.api.nvim_buf_set_extmark, buf, M.ns, row, 0,
-        { sign_text = "✓", sign_hl_group = "RedlineVerified", priority = 5 })
+        { sign_text = sg[1], sign_hl_group = sg[2], line_hl_group = r.status ~= "VERIFIED" and sg[2] or nil,
+          priority = 5 })
     end
+  end
+  for _, q in ipairs(data.verify or {}) do
+    local row = q.line - 1
+    pcall(vim.api.nvim_buf_set_extmark, buf, M.ns, row, 0, {
+      sign_text = "V?", sign_hl_group = "RedlineVerifyRequest", priority = 30,
+      virt_text = { { ("  ⧗ verify (%s) [%s]"):format(q.method, q.id), "RedlineVerifyRequest" } },
+      virt_text_pos = "eol",
+    })
   end
   -- lint issues as diagnostics
   local diags = {}

@@ -399,7 +399,11 @@ local REVIEW_KEYS = {
   { "n", "K", function() require("redline.picker").details(M.current()) end, "change details" },
   { "n", "c", function() M.compile() end, "compile" },
   { "n", "F", M.fix_with_agent, "send compile errors to the agent" },
-  { "n", "P", M.push, "push to Overleaf" },
+  { "n", "s", function() require("redline.verify").request(false) end, "verify the claim on this line (code/refcheck)" },
+  { "x", "s", function() require("redline.verify").request(true) end, "verify the selected claim (code/refcheck)" },
+  { "n", "S", function() require("redline.verify").send_all() end, "send all open % VERIFY requests to the agent" },
+  { "n", "O", function() require("redline.sync").sync() end, "sync to Overleaf (push, or merge with an agent first)" },
+  { "n", "P", M.push, "push to Overleaf (pull+merge, then push)" },
   { "n", "L", M.pull, "pull from Overleaf" },
   { "n", "f", function() core.config.follow = not core.config.follow; vim.notify("redline: PDF follow " .. (core.config.follow and "on" or "off")) end, "toggle PDF follow" },
   { "n", "?", function() M.help() end, "help" },
@@ -415,6 +419,7 @@ function M.help()
   end
   table.insert(lines, "")
   table.insert(lines, "  u / <C-r> undo/redo as usual; markers: %Y accept, %N keep, %X reject")
+  table.insert(lines, "  % VERIFY <method>: «claim»  ->  % VERIFIED | REFUTED | UNVERIFIED")
   local b = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_buf_set_lines(b, 0, -1, false, lines)
   local w = vim.api.nvim_open_win(b, true, { relative = "editor", row = 2, col = 4, width = 64,
@@ -517,6 +522,10 @@ function M.buffer_maps(buf)
     vim.wo.conceallevel = vim.wo.conceallevel >= 2 and 0 or 2
   end, "toggle concealed/raw markup")
   map("n", p .. "p", function() preview.show(core.state().root, vim.fn.line("."), true) end, "show in PDF")
+  map("n", p .. "s", function() require("redline.verify").request(false) end, "verify claim on this line")
+  map("x", p .. "s", function() require("redline.verify").request(true) end, "verify selected claim")
+  map("n", p .. "S", function() require("redline.verify").send_all() end, "send open verify requests")
+  map("n", p .. "o", function() require("redline.sync").sync() end, "sync to Overleaf")
 end
 
 return M

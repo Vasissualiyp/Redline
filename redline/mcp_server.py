@@ -29,6 +29,8 @@ reject every suggestion from their editor. Rules:
   markup problems mechanically.
 - Equations/environments cannot sit inside struck-out text: use plain_edit for them
   and explain with add_comment.
+- `% VERIFY <refcheck|code|any>: «claim»` lines are verification requests from the
+  human: verification_requests() lists them; answer each with record_verification().
 """
 
 mcp = MCPServer(name="redline", instructions=INSTRUCTIONS)
@@ -210,6 +212,49 @@ def push(force: bool = False) -> str:
     """Pull+merge, lint, compile, then upload to Overleaf. Refuses on merge conflicts,
     lint errors or a failed compile unless force=true. Only push when the human asks."""
     return _safe(svc().push, force)
+
+
+@mcp.tool()
+def sync_to_overleaf(agent: str | None = None) -> str:
+    """"Sync to Overleaf": if Overleaf is unchanged since the last sync, push; if it
+    changed, merge first. With agent=None and a real merge needed, this prepares a
+    workspace and lists the options; ask the human which agent should merge (or
+    resolve the files yourself, then call sync_finish). agent="git" accepts a clean
+    automatic merge. Only when the human asks to sync."""
+    return _safe(svc().sync_to_overleaf, agent)
+
+
+@mcp.tool()
+def sync_finish(push: bool = True) -> str:
+    """Apply a merge workspace you resolved yourself (no conflict markers left),
+    adopt Overleaf as the new base and push (push=false to stop before pushing)."""
+    return _safe(svc().sync_finish, push)
+
+
+# ---- claim verification --------------------------------------------------------------
+@mcp.tool()
+def verification_requests() -> str:
+    """Open `% VERIFY <method>: «claim»` requests the human left, with context and
+    instructions. Work through them and answer each with record_verification."""
+    return _safe(svc().verification_requests)
+
+
+@mcp.tool()
+def record_verification(status: str, source: str = "", evidence: str = "",
+                        request_id: str | None = None, anchor: str | None = None,
+                        section: str | None = None) -> str:
+    """Write the outcome of checking a claim as a `% VERIFIED|REFUTED|UNVERIFIED`
+    line after it (replacing the request when request_id is given; otherwise after
+    the line where `anchor` text ends). source: bib key or code:<path>:<line>;
+    evidence: exact quote with §/page, or the computed value. UNVERIFIED needs only
+    evidence (the reason)."""
+    return _safe(svc().record_verification, status, source, evidence, request_id, anchor, section)
+
+
+@mcp.tool()
+def verification_report() -> str:
+    """Counts of verified/refuted/unverified claims and the open requests."""
+    return _safe(svc().verification_report)
 
 
 @mcp.tool()

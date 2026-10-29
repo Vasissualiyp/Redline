@@ -29,16 +29,29 @@ keep_comment_regex = "TODO"
 # Shell command run before pushing (e.g. rsync fresh plots into light/).
 pre_push = ""
 compile_timeout = 600
-# Optional headless agent for fixing compile errors; {{prompt}} is replaced
-# with the error report, e.g. 'claude -p {{prompt}}' or 'opencode run {{prompt}}'.
-fix_cmd = ""
+merge_timeout = 1800
 # Extra MCP servers registered for the agent (name -> command list).
 [mcp_extra]
 zotero = ["zotero-mcp"]
 
+# Headless agents offered when Overleaf changed and a merge is needed
+# ("Sync to Overleaf"). {{prompt}} is replaced by the task, the command runs in
+# .redline/merge/. Defaults: claude, opencode. Define more here or, for all
+# papers, in ~/.config/redline/config.toml under the same [agents] table.
+[agents]
+# "opencode-kimi" = ["opencode", "run", "-m", "kimi/kimi-k2", "{{prompt}}"]
+# "claude-opus" = ["claude", "-p", "--model", "opus", "--permission-mode", "acceptEdits", "{{prompt}}"]
+
 # Hand-written coauthor macros, macro -> added|deleted|comment|highlight.
 [legacy]
 """
+
+GLOBAL_CONFIG = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "redline" / "config.toml"
+
+DEFAULT_AGENTS: dict[str, list[str]] = {
+    "claude": ["claude", "-p", "--permission-mode", "acceptEdits", "{prompt}"],
+    "opencode": ["opencode", "run", "{prompt}"],
+}
 
 
 @dataclass
@@ -53,7 +66,8 @@ class Config:
     keep_comment_regex: str = "TODO"
     pre_push: str = ""
     compile_timeout: int = 600
-    fix_cmd: str = ""
+    merge_timeout: int = 1800
+    agents: dict[str, list[str]] = field(default_factory=lambda: dict(DEFAULT_AGENTS))
     mcp_extra: dict[str, list[str]] = field(default_factory=lambda: {"zotero": ["zotero-mcp"]})
     legacy: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_LEGACY))
 
@@ -107,20 +121,31 @@ def find_root(start: Path | None = None) -> Path:
 def load(root: Path | None = None) -> Config:
     root = find_root(root)
     path = root / CONFIG_NAME
+    glob: dict = {}
+    if GLOBAL_CONFIG.exists():
+        with open(GLOBAL_CONFIG, "rb") as f:
+            glob = tomllib.load(f)
     data: dict = {}
     if path.exists():
         with open(path, "rb") as f:
             data = tomllib.load(f)
+    agents = dict(DEFAULT_AGENTS)
+    agents.update({k: list(v) for k, v in glob.get("agents", {}).items()})
+    agents.update({k: list(v) for k, v in data.get("agents", {}).items()})
+    data = {**{k: v for k, v in glob.items() if k != "agents"}, **data}
     main = data.get("main") or detect_main(root)
     legacy = dict(DEFAULT_LEGACY)
     legacy.update(data.get("legacy", {}))
     cfg = Config(root=root, main=main)
     for k in ("code_dir", "agent", "agent_kind", "ols", "overleaf_project",
-              "keep_comment_regex", "pre_push", "fix_cmd"):
+              "keep_comment_regex", "pre_push"):
         if k in data:
             setattr(cfg, k, str(data[k]))
     if "compile_timeout" in data:
         cfg.compile_timeout = int(data["compile_timeout"])
+    if "merge_timeout" in data:
+        cfg.merge_timeout = int(data["merge_timeout"])
+    cfg.agents = {k: v for k, v in agents.items() if v}
     if "mcp_extra" in data:
         cfg.mcp_extra = {k: list(v) for k, v in data["mcp_extra"].items()}
     cfg.legacy = legacy
