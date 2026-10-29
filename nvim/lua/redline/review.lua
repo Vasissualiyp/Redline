@@ -405,6 +405,7 @@ local REVIEW_KEYS = {
   { "n", "O", function() require("redline.sync").sync() end, "sync to Overleaf (push, or merge with an agent first)" },
   { "n", "P", M.push, "push to Overleaf (pull+merge, then push)" },
   { "n", "L", M.pull, "pull from Overleaf" },
+  { "n", "W", function() require("redline.layout").pick() end, "pane layout preset" },
   { "n", "f", function() core.config.follow = not core.config.follow; vim.notify("redline: PDF follow " .. (core.config.follow and "on" or "off")) end, "toggle PDF follow" },
   { "n", "?", function() M.help() end, "help" },
   { "n", "q", function() M.exit() end, "leave review mode" },
@@ -526,6 +527,8 @@ function M.buffer_maps(buf)
   map("x", p .. "s", function() require("redline.verify").request(true) end, "verify selected claim")
   map("n", p .. "S", function() require("redline.verify").send_all() end, "send open verify requests")
   map("n", p .. "o", function() require("redline.sync").sync() end, "sync to Overleaf")
+  map("n", p .. "w", function() require("redline.layout").pick() end, "pane layout preset")
+  map("n", p .. "W", function() require("redline.layout").next() end, "next pane layout")
 end
 
 return M

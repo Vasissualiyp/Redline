@@ -21,6 +21,9 @@ code_dir = "{code_dir}"
 # (agent_kind: "claude" writes .mcp.json, "opencode" writes opencode.json).
 agent = "claude"
 agent_kind = "claude"
+# Pane arrangement at start: default, columns, rows, pdf-tall, agent-bottom,
+# pdf-left, paper-top (switch later with W in review mode or `redline layout`).
+layout = "default"
 # Overleaf sync (overleaf-sync's `ols`); project defaults to the directory name.
 ols = "ols"
 overleaf_project = ""
@@ -61,6 +64,7 @@ class Config:
     code_dir: str = ""
     agent: str = "claude"
     agent_kind: str = "claude"
+    layout: str = "default"
     ols: str = "ols"
     overleaf_project: str = ""
     keep_comment_regex: str = "TODO"
@@ -137,7 +141,7 @@ def load(root: Path | None = None) -> Config:
     legacy = dict(DEFAULT_LEGACY)
     legacy.update(data.get("legacy", {}))
     cfg = Config(root=root, main=main)
-    for k in ("code_dir", "agent", "agent_kind", "ols", "overleaf_project",
+    for k in ("code_dir", "agent", "agent_kind", "layout", "ols", "overleaf_project",
               "keep_comment_regex", "pre_push"):
         if k in data:
             setattr(cfg, k, str(data[k]))

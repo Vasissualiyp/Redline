@@ -61,6 +61,7 @@ gitsigns' `]c` is restored when you leave.
 | `A` `R` `M` (also visual) | accept / reject / apply markers in the section, heading or selection |
 | `K` / `gl` | details / list of all changes (Telescope) |
 | `p` / `f` | show in the PDF pane / toggle follow |
+| `W` | pane layout preset (also `<leader>jw`; `<leader>jW` cycles) |
 | `s` (also visual) | verify the claim on this line / the selection, via refcheck or code |
 | `S` | send all open `% VERIFY` requests to the agent |
 | `c` / `F` | compile (errors go to quickfix) / send the errors to the agent |
@@ -79,6 +80,28 @@ To put the status in your statusline, use `require('redline').status()`
 (e.g. `REVIEW C12/49 · §3.2 · 2 marked`).
 
 Undo is ordinary vim undo. Accepting and rejecting are applied as buffer edits.
+
+## Pane layouts
+
+`W` in review mode, `<leader>jw`, `:Redline layout <name>` or
+`redline layout <name|--next|--prev>`. The panes are rearranged in place,
+nothing restarts, and the PDF re-renders at the new size.
+
+| preset | arrangement |
+|---|---|
+| `default` | paper \| agent over PDF |
+| `columns` | paper \| agent \| PDF |
+| `rows` | paper / agent / PDF, stacked |
+| `pdf-tall` | paper over agent \| full-height PDF (suits portrait pages) |
+| `agent-bottom` | paper \| PDF, agent full width below |
+| `pdf-left` | PDF \| paper \| agent |
+| `paper-top` | paper on top, agent \| PDF below |
+| `focus` | toggle the paper pane fullscreen (tmux zoom) |
+
+`layout = "..."` in `.redline.toml` picks the arrangement at start. To switch from
+any pane, bind a key in `tmux.conf`, e.g.
+`bind-key M-l run-shell "redline layout --next --session '#{session_name}'"`.
+That needs `redline` on tmux's PATH.
 
 ## Verifying claims
 

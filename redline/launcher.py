@@ -141,6 +141,12 @@ def open_workspace(root: Path | None, attach: bool = True) -> int:
                           "-n", "code", "-c", code, "nvim .")
         _tmux("split-window", "-h", "-l", "35%", "-t", code_pane, "-c", code)
         _tmux("select-window", "-t", paper)
+        if proj.cfg.layout != "default":
+            from . import layout as _layout
+            try:
+                _layout.apply(proj.cfg.layout, _tmux("display", "-p", "-t", editor, "#{window_id}"))
+            except Exception as e:  # a bad preset name must not stop the session
+                print(f"layout {proj.cfg.layout!r}: {e}", file=sys.stderr)
     if not attach:
         print(name)
         return 0

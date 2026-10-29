@@ -100,6 +100,13 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("mcp-config", help="write the agent's MCP config into the paper dir")
     p.add_argument("--print", action="store_true", help="print instead of writing")
     p = sub.add_parser("preview", help="PDF pane (kitty graphics)")
+    p = sub.add_parser("layout", help="arrange the paper/agent/PDF panes (presets)")
+    p.add_argument("name", nargs="?", help="preset name; omit with --next/--prev/--list")
+    p.add_argument("--next", action="store_true")
+    p.add_argument("--prev", action="store_true")
+    p.add_argument("--list", action="store_true")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--session", help="tmux session (default: the current one)")
     p = sub.add_parser("open", help="start the tmux workspace")
     p.add_argument("dir", nargs="?")
     p.add_argument("--no-attach", action="store_true")
@@ -125,6 +132,17 @@ def _run(a: argparse.Namespace) -> int:
     if a.cmd == "open":
         from .launcher import open_workspace
         return open_workspace(Path(a.dir).expanduser() if a.dir else None, attach=not a.no_attach)
+    if a.cmd == "layout":
+        from . import layout as L
+        if a.list or not (a.name or a.next or a.prev):
+            if a.json:
+                print(json.dumps([{"name": n, "desc": L.PRESETS[n][0]} for n in L.ORDER]))
+            else:
+                print("\n".join(f"{n:13s} {L.PRESETS[n][0]}" for n in L.ORDER))
+            return 0
+        win = L.find_window(a.session) if a.session else None
+        print(L.cycle(-1 if a.prev else 1, win) if (a.next or a.prev) else L.apply(a.name, win))
+        return 0
     if a.cmd == "init":
         from . import sync
         root = config.find_root()

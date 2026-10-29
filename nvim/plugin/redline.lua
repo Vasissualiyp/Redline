@@ -15,6 +15,9 @@ local subcommands = {
   pull = function() require("redline.review").pull() end,
   acceptall = function() require("redline.review").accept_all() end,
   sync = function() require("redline.sync").sync() end,
+  layout = function(args)
+    if args[2] then require("redline.layout").apply(args[2]) else require("redline.layout").pick() end
+  end,
   verify = function() require("redline.verify").request(false) end,
   verifyall = function() require("redline.verify").send_all() end,
   lint = function(args)
@@ -41,6 +44,9 @@ end, {
   complete = function(arg, line)
     if line:match("^%S+%s+lint%s") then
       return { "fix" }
+    end
+    if line:match("^%S+%s+layout%s") then
+      return vim.tbl_map(function(p) return p.name end, require("redline.layout").presets())
     end
     return vim.tbl_filter(function(k) return vim.startswith(k, arg) end, vim.tbl_keys(subcommands))
   end,

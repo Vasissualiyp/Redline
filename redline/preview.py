@@ -105,6 +105,9 @@ class Pane:
     # ---- rendering --------------------------------------------------------------
     def render(self) -> None:
         cols, rows = shutil.get_terminal_size()
+        # stay 2 columns clear of the right edge: a placeholder in the last
+        # column makes the terminal wrap the line
+        cols = max(10, cols - 2)
         rows -= 1  # status line
         # flush now: icat writes to the terminal directly, and a clear still
         # sitting in Python's buffer would erase the image right after it
@@ -185,8 +188,9 @@ class Pane:
         return msg.splitlines()[0] if msg else ""
 
     def _status(self, text: str) -> None:
-        _, rows = shutil.get_terminal_size()
-        sys.stdout.write(f"\x1b[{rows};1H\x1b[2K\x1b[7m {text[:200]} \x1b[0m")
+        cols, rows = shutil.get_terminal_size()
+        text = f" {text} "[: max(1, cols - 1)]
+        sys.stdout.write(f"\x1b[{rows};1H\x1b[2K\x1b[7m{text}\x1b[0m")
         sys.stdout.flush()
 
     # ---- events -------------------------------------------------------------------
