@@ -20,6 +20,7 @@ import socket
 import subprocess
 import sys
 import termios
+import time
 import tty
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -103,10 +104,12 @@ class Pane:
         self.mtime = 0.0
         self.pages = 1
         self.page_w = 612.0
+        self.drawn_size = (0, 0)
 
     # ---- rendering --------------------------------------------------------------
     def render(self) -> None:
-        cols, rows = shutil.get_terminal_size()
+        cols, rows = _size()
+        self.drawn_size = (cols, rows)
         # stay 2 columns clear of the right edge: a placeholder in the last
         # column makes the terminal wrap the line
         cols = max(10, cols - 2)
@@ -193,7 +196,7 @@ class Pane:
         return msg.splitlines()[0] if msg else ""
 
     def _status(self, text: str) -> None:
-        cols, rows = shutil.get_terminal_size()
+        cols, rows = _size()
         text = f" {text} "[: max(1, cols - 1)]
         sys.stdout.write(f"\x1b[{rows};1H\x1b[2K\x1b[7m{text}\x1b[0m")
         sys.stdout.flush()
@@ -282,6 +285,15 @@ class Pane:
         return False
 
 
+def _size() -> tuple[int, int]:
+    """The pane's size from the tty itself (not $COLUMNS/$LINES, which go stale)."""
+    try:
+        sz = os.get_terminal_size(sys.stdout.fileno())
+        return sz.columns, sz.lines
+    except OSError:
+        return tuple(shutil.get_terminal_size())
+
+
 def main(proj: Project) -> int:
     pane = Pane(proj)
     from .config import socket_path
@@ -297,10 +309,14 @@ def main(proj: Project) -> int:
     sys.stdout.write("\x1b[?25l")
     pane.check_pdf()
     pane.render()
-    last_size = shutil.get_terminal_size()
+    # The pane is still settling when we start (layout preset, client attach),
+    # so draw again shortly after; later resizes redraw once the size is stable.
+    t0 = time.monotonic()
+    pending = [t0 + 1.5, t0 + 4.0]
+    resized_at = None
     try:
         while True:
-            r, _, _ = select.select([srv, sys.stdin], [], [], 0.7)
+            r, _, _ = select.select([srv, sys.stdin], [], [], 0.25)
             dirty = False
             if srv in r:
                 conn, _ = srv.accept()
@@ -325,9 +341,16 @@ def main(proj: Project) -> int:
                 if pane.view.line:
                     pane.goto_line(pane.view.line, 0, pane.view.text, pane.view.end)
                 dirty = True
-            size = shutil.get_terminal_size()
-            if size != last_size:
-                last_size, dirty = size, True
+            now = time.monotonic()
+            if _size() != pane.drawn_size:
+                resized_at = resized_at or now
+                if now - resized_at >= 0.4:  # size stopped changing
+                    dirty, resized_at = True, None
+            else:
+                resized_at = None
+            if pending and now >= pending[0]:
+                pending.pop(0)
+                dirty = True
             if dirty:
                 pane.render()
     except KeyboardInterrupt:
