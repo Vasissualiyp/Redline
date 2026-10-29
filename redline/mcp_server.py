@@ -27,7 +27,8 @@ reject every suggestion from their editor. Rules:
 - Review markers: the human writes %Y (accept), %N [note] (keep pending; the note is
   feedback for you) and %X (reject) next to changes. Read review_notes() first when
   asked to address feedback; revise_change() a %N suggestion instead of stacking a
-  new one on top.
+  new one on top. revise_change clears the %N (the human re-reviews the change); if
+  you disagree with a note, answer it with revise_change(id, comment="Kept: <why>").
 - Pending changes are addressed by id (stable hash like a3f9c2) or label (C12;
   labels renumber after every edit, ids do not).
 - Run compile() after a batch of edits and fix what it reports. lint(fix=true) fixes
@@ -168,10 +169,13 @@ def plain_edit(old_text: str, new_text: str, section: str | None = None,
 
 @mcp.tool()
 def revise_change(id: str, new_text: str | None = None, comment: str | None = None,
-                  ctx: Context | None = None) -> str:
+                  keep_note: bool = False, ctx: Context | None = None) -> str:
     """Rewrite a pending suggestion in place: new_text replaces its new text (a deletion
-    becomes a replacement); comment sets/replaces its explaining \\chcomment."""
-    return _safe(svc().revise_change, id, new_text, comment, _origin(ctx, None))
+    becomes a replacement); comment sets/replaces its explaining \\chcomment.
+    This answers the human's %N note on the change, so the %N marker is removed and the
+    change becomes unrated for re-review (keep_note=true leaves it). To answer a note
+    without changing the text, pass only comment (e.g. "Kept: <why>")."""
+    return _safe(svc().revise_change, id, new_text, comment, _origin(ctx, None), keep_note)
 
 
 @mcp.tool()

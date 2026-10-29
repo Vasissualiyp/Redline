@@ -58,6 +58,7 @@ gitsigns' `]c` is restored when you leave.
 | `y` / `X` | mark `%Y` / `%X` for later bulk application |
 | `e` / `C` | edit the suggested text / its comment in place |
 | `d` (also visual) | ask the agent about this change / the selection |
+| `N` | send all `%N` notes to the agent in one message (`:Redline sendnotes`); a revise clears the `%N` so the change shows up as unrated again |
 | `A` `R` `M` (also visual) | accept / reject / apply markers in the section, heading or selection |
 | `K` / `gl` | details / list of all changes (Telescope) |
 | `p` / `f` | show in the PDF pane / toggle follow. The PDF marks the change's own words with a highlighter, or the cursor line's words outside a change |

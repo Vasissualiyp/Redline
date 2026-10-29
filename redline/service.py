@@ -6,8 +6,19 @@ from . import compile as _compile
 from . import lint as _lint
 from . import sync as _sync
 from . import verify as _verify
-from .model import Change, Document, RedlineError
+from .model import Change, Document, RedlineError, TextEdit
 from .state import Project
+
+
+def _diff_edit(old: str, new: str) -> TextEdit:
+    """One edit turning old into new (common prefix and suffix left alone)."""
+    a = 0
+    while a < min(len(old), len(new)) and old[a] == new[a]:
+        a += 1
+    b = 0
+    while b < min(len(old), len(new)) - a and old[-1 - b] == new[-1 - b]:
+        b += 1
+    return TextEdit(a, len(old) - b, new[a:len(new) - b])
 
 
 def _short(s: str | None, n: int) -> str:
@@ -161,9 +172,20 @@ class Service:
                                                         to_section, occurrence),
                           "propose_move", origin)
 
-    def revise_change(self, id, new_text=None, comment=None, origin=None):
-        return self._edit(lambda d: author.revise_change(d, d.find(id), new_text, comment),
-                          f"revise {id}", origin)
+    def revise_change(self, id, new_text=None, comment=None, origin=None, keep_note=False):
+        """Revising answers a %N note, so the note is cleared and the change is unrated again."""
+        def fn(d: Document):
+            it = d.find(id)
+            edits = author.revise_change(d, it, new_text, comment)
+            if keep_note or it.marker is None or it.marker.kind != "N":
+                return edits
+            mid = ops.apply(d.src, edits)
+            d2 = self.proj.doc(mid)
+            it2 = next((i for i in d2.items if i.start == it.start), None)
+            if it2 is None or it2.marker is None:
+                return edits
+            return [_diff_edit(d.src, ops.apply(mid, ops.set_marker(d2, it2, None)))]
+        return self._edit(fn, f"revise {id}", origin)
 
     # ---- resolving -------------------------------------------------------------------
     def resolve(self, action: str, selector: dict, comments: str = "auto",

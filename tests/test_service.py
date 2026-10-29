@@ -82,3 +82,29 @@ def test_compile_maps_error_to_change(svc):
     assert "cite-in-strikeout" in svc.lint()
     svc.lint(fix=True)
     assert C.run(svc.proj).ok
+
+
+def _noted(s):
+    return next(i for i in s.proj.doc().items if i.marker and i.marker.kind == "N")
+
+
+def test_revising_clears_the_note(svc):
+    it = _noted(svc)
+    svc.revise_change(it.id, new_text="a clause about LTE, ", comment="Revised per note")
+    t = svc.proj.read()
+    assert "\\added{a clause about LTE, }\\chcomment{Revised per note}the cooling rate rises." in t
+    assert "why this clause?" not in t and "%X" in t
+
+
+def test_answering_a_note_with_a_comment_only(svc):
+    it = _noted(svc)
+    svc.revise_change(it.id, comment="Kept: it states the mechanism")
+    t = svc.proj.read()
+    assert "\\added{an inserted clause, }\\chcomment{Kept: it states the mechanism}" in t
+    assert "%N" not in t
+
+
+def test_keep_note(svc):
+    it = _noted(svc)
+    svc.revise_change(it.id, new_text="another clause, ", keep_note=True)
+    assert "%N why this clause?" in svc.proj.read()

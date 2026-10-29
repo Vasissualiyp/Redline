@@ -280,6 +280,46 @@ function M.discuss()
   end)
 end
 
+local function clip(s, n)
+  s = (s or ""):gsub("%s+", " ")
+  return #s <= n and s or (s:sub(1, n - 1) .. "…")
+end
+
+--- Send every %N note to the agent in one message (one turn, one compile).
+function M.send_notes()
+  local st = core.state()
+  if not (st and st.data) then
+    return vim.notify("redline: buffer not attached")
+  end
+  local noted = vim.tbl_filter(function(it) return it.marker and it.marker.kind == "N" end, st.data.items)
+  local orphans = vim.tbl_filter(function(m) return m.kind == "N" end, st.data.orphan_markers or {})
+  local n = #noted + #orphans
+  if n == 0 then
+    return vim.notify("redline: no %N notes in the paper")
+  end
+  if vim.fn.confirm(("Send %d %%N note(s) to the agent?"):format(n), "&Yes\n&No", 1) ~= 1 then
+    return
+  end
+  local lines = {
+    ("[redline] Review notes: I marked %d pending change(s) with %%N. For each one, address the note"
+      .. " with revise_change(id, new_text?, comment?) (that clears the %%N so I re-review it), or"
+      .. " answer with revise_change(id, comment=\"Kept: <why>\") if you disagree. Do any checks"
+      .. " yourself (read the section or the code), don't stack new suggestions, compile() once at"
+      .. " the end, then give me one line per change. Full text: list_changes({\"ids\": [...]}, full=true)."):format(n),
+    "",
+  }
+  for _, it in ipairs(noted) do
+    table.insert(lines, ("- %s id %s (%s, §%s, l.%d): note «%s»"):format(
+      it.label, it.id, it.kind, it.section, it.lines[1], it.marker.note ~= "" and it.marker.note or "(no text)"))
+    if it.new then table.insert(lines, "    new: «" .. clip(it.new, 240) .. "»") end
+    if it.old then table.insert(lines, "    old: «" .. clip(it.old, 160) .. "»") end
+  end
+  for _, m in ipairs(orphans) do
+    table.insert(lines, ("- line %d (not on a change): note «%s»"):format(m.line, m.note))
+  end
+  tmux.send_agent(table.concat(lines, "\n"))
+end
+
 function M.send_visual()
   local a, b = vim.fn.line("v"), vim.fn.line(".")
   if a > b then a, b = b, a end
@@ -387,6 +427,7 @@ local REVIEW_KEYS = {
   { "n", "e", M.edit_current, "edit the suggested text" },
   { "n", "C", M.edit_comment, "edit/add the explaining comment" },
   { "n", "d", M.discuss, "ask the agent about this change" },
+  { "n", "N", M.send_notes, "send all %N notes to the agent (one message)" },
   { "x", "d", M.send_visual, "ask the agent about the selection" },
   { "n", "p", function() preview.show_cursor(core.state().root, true) end, "show in PDF pane" },
   { "n", "A", function() M.resolve_range("accept", false) end, "accept section (or heading under cursor)" },
@@ -516,6 +557,7 @@ function M.buffer_maps(buf)
   map("x", p .. "x", function() M.resolve_range("reject", true) end, "reject selection")
   map("n", p .. "n", function() M.mark_current("N") end, "keep pending with a note")
   map("n", p .. "d", M.discuss, "ask the agent")
+  map("n", p .. "N", M.send_notes, "send all %N notes to the agent")
   map("x", p .. "d", M.send_visual, "ask the agent about the selection")
   map("n", p .. "l", function() require("redline.picker").pick() end, "list changes")
   map("n", p .. "c", function() M.compile() end, "compile")
