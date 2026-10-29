@@ -30,7 +30,6 @@ def test_missing_and_extra_panes():
     assert order == ["%1", "%3", "%9"]
 
 
-def test_checksum_matches_tmux():
-    # a layout string tmux itself produced
-    body = "120x40,0,0{30x40,0,0,39,50x40,31,0,37,38x40,82,0,38}"
-    assert L._checksum(body) == L._checksum(body) and len(L._checksum(body)) == 4
+def test_checksum_regression():
+    # tmux 3.8 accepted this string with this checksum (select-layout rejects bad ones)
+    assert L._checksum("120x40,0,0{30x40,0,0,39,50x40,31,0,37,38x40,82,0,38}") == "881d"
