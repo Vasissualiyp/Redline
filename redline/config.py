@@ -38,13 +38,16 @@ merge_timeout = 1800
 [mcp_extra]
 zotero = ["zotero-mcp"]
 
-# Headless agents offered when Overleaf changed and a merge is needed
-# ("Sync to Overleaf"). {{prompt}} is replaced by the task, the command runs in
-# .redline/merge/. Defaults: claude, opencode. Define more here or, for all
-# papers, in ~/.config/redline/config.toml under the same [agents] table.
+# Agents offered when Overleaf and the local copy conflict ("Sync to Overleaf";
+# clean merges need no agent). {{prompt}} is replaced by the task; the command
+# runs in .redline/merge/. A list runs headless; a table with tui = true opens
+# an interactive session in a tmux window, closed once the merge is resolved.
+# Defaults: claude (interactive), claude-headless (claude -p), opencode (run),
+# opencode-tui.
+# Define more here or, for all papers, in ~/.config/redline/config.toml.
 [agents]
+# "claude-opus" = {{ cmd = ["claude", "--model", "opus", "--permission-mode", "acceptEdits", "{{prompt}}"], tui = true }}
 # "opencode-kimi" = ["opencode", "run", "-m", "kimi/kimi-k2", "{{prompt}}"]
-# "claude-opus" = ["claude", "-p", "--model", "opus", "--permission-mode", "acceptEdits", "{{prompt}}"]
 
 # Hand-written coauthor macros, macro -> added|deleted|comment|highlight.
 [legacy]
@@ -52,10 +55,22 @@ zotero = ["zotero-mcp"]
 
 GLOBAL_CONFIG = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "redline" / "config.toml"
 
-DEFAULT_AGENTS: dict[str, list[str]] = {
-    "claude": ["claude", "-p", "--permission-mode", "acceptEdits", "{prompt}"],
-    "opencode": ["opencode", "run", "{prompt}"],
+DEFAULT_AGENTS: dict[str, dict] = {
+    # interactive Claude Code in a tmux window: you can watch and steer it
+    "claude": {"cmd": ["claude", "--permission-mode", "acceptEdits", "{prompt}"], "tui": True},
+    "claude-headless": {"cmd": ["claude", "-p", "--permission-mode", "acceptEdits", "{prompt}"],
+                        "tui": False},
+    "opencode": {"cmd": ["opencode", "run", "{prompt}"], "tui": False},
+    "opencode-tui": {"cmd": ["opencode", "--prompt", "{prompt}"], "tui": True},
 }
+
+
+def agent_spec(value) -> dict:
+    """An [agents] entry: a command list (headless) or {cmd = [...], tui = bool}."""
+    if isinstance(value, dict):
+        cmd = list(value.get("cmd") or [])
+        return {"cmd": cmd, "tui": bool(value.get("tui", False))}
+    return {"cmd": list(value or []), "tui": False}
 
 
 @dataclass
@@ -72,7 +87,7 @@ class Config:
     pre_push: str = ""
     compile_timeout: int = 600
     merge_timeout: int = 1800
-    agents: dict[str, list[str]] = field(default_factory=lambda: dict(DEFAULT_AGENTS))
+    agents: dict[str, dict] = field(default_factory=lambda: dict(DEFAULT_AGENTS))
     mcp_extra: dict[str, list[str]] = field(default_factory=lambda: {"zotero": ["zotero-mcp"]})
     legacy: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_LEGACY))
 
@@ -135,8 +150,8 @@ def load(root: Path | None = None) -> Config:
         with open(path, "rb") as f:
             data = tomllib.load(f)
     agents = dict(DEFAULT_AGENTS)
-    agents.update({k: list(v) for k, v in glob.get("agents", {}).items()})
-    agents.update({k: list(v) for k, v in data.get("agents", {}).items()})
+    agents.update({k: agent_spec(v) for k, v in glob.get("agents", {}).items()})
+    agents.update({k: agent_spec(v) for k, v in data.get("agents", {}).items()})
     data = {**{k: v for k, v in glob.items() if k != "agents"}, **data}
     main = data.get("main") or detect_main(root)
     legacy = dict(DEFAULT_LEGACY)
@@ -150,7 +165,7 @@ def load(root: Path | None = None) -> Config:
         cfg.compile_timeout = int(data["compile_timeout"])
     if "merge_timeout" in data:
         cfg.merge_timeout = int(data["merge_timeout"])
-    cfg.agents = {k: v for k, v in agents.items() if v}
+    cfg.agents = {k: v for k, v in agents.items() if v["cmd"]}
     if "mcp_extra" in data:
         cfg.mcp_extra = {k: list(v) for k, v in data["mcp_extra"].items()}
     cfg.legacy = legacy

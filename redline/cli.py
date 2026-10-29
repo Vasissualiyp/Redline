@@ -205,7 +205,9 @@ def _run(a: argparse.Namespace) -> int:
         return _sync_cmd(s, a)
     elif a.cmd == "agents":
         names = list(proj.cfg.agents)
-        print(json.dumps(names) if a.json else "\n".join(f"{n}: {' '.join(proj.cfg.agents[n])}" for n in names))
+        print(json.dumps(names) if a.json else "\n".join(
+            f"{n}{' (interactive)' if proj.cfg.agents[n]['tui'] else ''}: {' '.join(proj.cfg.agents[n]['cmd'])}"
+            for n in names))
     elif a.cmd == "verify":
         print(s.verification_requests() if a.what == "requests" else s.verification_report())
     elif a.cmd == "undo":
@@ -242,10 +244,8 @@ def _sync_cmd(s, a: argparse.Namespace) -> int:
             if not a.yes and input("Push to Overleaf? [y/N] ").strip().lower() != "y":
                 return 0
             return done(s.push_only())
-        if chk.both_changed:
-            names = list(s.proj.cfg.agents)
-            clean = all(chk.conflicts.get(f, 0) == 0 for f in chk.both_changed)
-            opts = names + (["git"] if clean else [])
+        if chk.both_changed and not chk.clean:
+            opts = list(s.proj.cfg.agents)
             for i, n in enumerate(opts, 1):
                 print(f"  {i}) {n}")
             pick = input("Who merges? number (empty = cancel): ").strip()

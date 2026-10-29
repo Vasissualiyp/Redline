@@ -1,47 +1,95 @@
--- "Sync to Overleaf": push when Overleaf is unchanged since the last sync,
--- otherwise let an agent of your choice merge first, then confirm the push.
+-- "Sync to Overleaf": push when Overleaf has nothing new, merge with git when
+-- there are no conflicts, and only for real conflicts let an agent of your
+-- choice merge first. Output goes to one bottom split that never keeps focus.
 local core = require("redline")
 local rpc = require("redline.rpc")
 
 local M = {}
 
---- Run a redline subcommand, streaming its output into a bottom split.
-local function stream(args, title, on_exit)
+local out = { buf = nil, win = nil }
+
+local function paper_win()
   local st = core.state()
-  vim.cmd("botright 14new")
-  local buf = vim.api.nvim_get_current_buf()
-  vim.bo[buf].buftype = "nofile"
-  vim.bo[buf].bufhidden = "wipe"
-  vim.api.nvim_buf_set_name(buf, "redline://" .. title .. "-" .. buf)
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "$ redline " .. args, "" })
-  local win = vim.api.nvim_get_current_win()
-  vim.keymap.set("n", "q", "<cmd>close<CR>", { buffer = buf })
-  vim.cmd("wincmd p")
-  local function append(_, data)
+  for _, w in ipairs(vim.api.nvim_list_wins()) do
+    if core.bufs[vim.api.nvim_win_get_buf(w)] then
+      return w
+    end
+  end
+  return st and vim.api.nvim_get_current_win()
+end
+
+--- Close the sync output split and go back to the paper.
+function M.close()
+  if out.win and vim.api.nvim_win_is_valid(out.win) then
+    vim.api.nvim_win_close(out.win, true)
+  end
+  out.win = nil
+  local w = paper_win()
+  if w and vim.api.nvim_win_is_valid(w) then
+    vim.api.nvim_set_current_win(w)
+  end
+end
+
+local function show_output(title)
+  if not (out.buf and vim.api.nvim_buf_is_valid(out.buf)) then
+    out.buf = vim.api.nvim_create_buf(false, true)
+    vim.bo[out.buf].bufhidden = "hide"
+    vim.api.nvim_buf_set_name(out.buf, "redline://sync")
+    for _, k in ipairs({ "q", "<Esc>", "<CR>" }) do
+      vim.keymap.set("n", k, M.close, { buffer = out.buf, nowait = true, desc = "redline: close sync output" })
+    end
+  end
+  if not (out.win and vim.api.nvim_win_is_valid(out.win)) then
+    local back = vim.api.nvim_get_current_win()
+    vim.cmd("botright 12split")
+    out.win = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_set_buf(out.win, out.buf)
+    vim.wo[out.win].winfixheight = true
+    vim.wo[out.win].statusline = " redline sync — q / <Esc> closes, focus stays on the paper"
+    vim.api.nvim_set_current_win(back)
+  end
+  vim.api.nvim_buf_set_lines(out.buf, 0, -1, false, { "── " .. title .. " ──" })
+end
+
+local function append(lines)
+  if not (out.buf and vim.api.nvim_buf_is_valid(out.buf)) then
+    return
+  end
+  lines = vim.tbl_filter(function(l) return l ~= "" end, lines or {})
+  if #lines == 0 then
+    return
+  end
+  vim.api.nvim_buf_set_lines(out.buf, -1, -1, false, lines)
+  if out.win and vim.api.nvim_win_is_valid(out.win) then
+    vim.api.nvim_win_set_cursor(out.win, { vim.api.nvim_buf_line_count(out.buf), 0 })
+  end
+end
+
+--- Run a redline subcommand; with `visible`, stream it into the split.
+local function run(args, visible, on_exit)
+  local st = core.state()
+  local collected = {}
+  if visible then
+    show_output("redline " .. args)
+  end
+  local function on_data(_, data)
     vim.schedule(function()
-      if not vim.api.nvim_buf_is_valid(buf) then
-        return
-      end
-      local lines = vim.tbl_filter(function(l) return l ~= "" end, data or {})
-      if #lines > 0 then
-        vim.api.nvim_buf_set_lines(buf, -1, -1, false, lines)
-        if vim.api.nvim_win_is_valid(win) then
-          vim.api.nvim_win_set_cursor(win, { vim.api.nvim_buf_line_count(buf), 0 })
-        end
+      vim.list_extend(collected, data or {})
+      if visible then
+        append(data)
       end
     end)
   end
   vim.fn.jobstart(rpc.shell(args), {
     cwd = st.root,
     env = { REDLINE_ROOT = st.root },
-    on_stdout = append,
-    on_stderr = append,
+    on_stdout = on_data,
+    on_stderr = on_data,
     on_exit = function(_, code)
       vim.schedule(function()
-        append(nil, { "", ("[exit %d]"):format(code) })
         core.reload()
         if on_exit then
-          on_exit(code)
+          on_exit(code, table.concat(collected, "\n"):gsub("%s+$", ""))
         end
       end)
     end,
@@ -49,10 +97,24 @@ local function stream(args, title, on_exit)
 end
 
 local function push()
-  stream("sync push --no-pull", "push", function(code)
-    vim.notify(code == 0 and "redline: pushed to Overleaf" or "redline: push refused or failed (see split)",
-      code == 0 and vim.log.levels.INFO or vim.log.levels.WARN)
+  vim.notify("redline: pushing to Overleaf…")
+  run("sync push --no-pull", false, function(code, text)
+    if code == 0 then
+      vim.notify("redline: pushed to Overleaf")
+    else
+      show_output("push refused or failed")
+      append(vim.split(text, "\n"))
+      vim.notify("redline: push refused or failed (see the split; q closes it)", vim.log.levels.WARN)
+    end
   end)
+end
+
+local function confirm_push(msg)
+  local yes = vim.fn.confirm(msg, "&Push\n&Not now", 1) == 1
+  M.close()
+  if yes then
+    push()
+  end
 end
 
 function M.sync()
@@ -69,50 +131,41 @@ function M.sync()
         return vim.notify("redline sync: " .. ((r.stderr or "") .. (r.stdout or "")), vim.log.levels.ERROR)
       end
       if chk.remote_unchanged then
-        if vim.fn.confirm("Overleaf is unchanged since the last sync. Push now?", "&Yes\n&No", 1) == 1 then
-          push()
-        end
-        return
+        return confirm_push("Overleaf has nothing new since the last sync. Push your edits?")
       end
-      local summary = "Overleaf changed: " .. table.concat(chk.remote_changed, ", ")
-      if #(chk.both_changed or {}) == 0 then
-        if vim.fn.confirm(summary .. "\nOnly Overleaf touched these. Take them and push?", "&Yes\n&No", 1) == 1 then
-          stream("sync overleaf --reuse-download --yes", "sync")
-        end
-        return
-      end
-      local clean = true
-      for _, f in ipairs(chk.both_changed) do
-        if (chk.conflicts[f] or 0) > 0 then
-          clean = false
-        end
+      local what = table.concat(chk.remote_changed, ", ")
+      if chk.clean then
+        -- Overleaf edits that merge without conflicts: no agent needed
+        vim.notify("redline: merging Overleaf edits (" .. what .. ")…")
+        return run("sync overleaf --reuse-download --no-push --agent git", false, function(code, text)
+          if code ~= 0 then
+            show_output("merge failed")
+            append(vim.split(text, "\n"))
+            return
+          end
+          confirm_push("Merged Overleaf's edits in " .. what .. " (no conflicts). Push now?")
+        end)
       end
       local opts = {}
       for _, a in ipairs(chk.agents or {}) do
-        table.insert(opts, { name = a, label = "merge with " .. a })
+        table.insert(opts, a)
       end
-      if clean then
-        table.insert(opts, 1, { name = "git", label = "git: merges cleanly, no agent needed" })
-      end
-      local conflicts = {}
+      local blocks = {}
       for _, f in ipairs(chk.both_changed) do
-        table.insert(conflicts, ("%s (%d conflict block(s))"):format(f, chk.conflicts[f] or 0))
+        table.insert(blocks, ("%s: %d conflict block(s)"):format(f, chk.conflicts[f] or 0))
       end
       vim.ui.select(opts, {
-        prompt = summary .. "; both sides changed " .. table.concat(conflicts, ", ") .. ". Who merges?",
-        format_item = function(o) return o.label end,
-      }, function(choice)
-        if not choice then
+        prompt = "Overleaf and your copy conflict (" .. table.concat(blocks, ", ") .. "). Who merges?",
+      }, function(agent)
+        if not agent then
           return
         end
-        stream("sync overleaf --reuse-download --no-push --agent " .. vim.fn.shellescape(choice.name), "merge",
+        run("sync overleaf --reuse-download --no-push --agent " .. vim.fn.shellescape(agent), true,
           function(code)
             if code ~= 0 then
-              return vim.notify("redline: merge not applied (see split)", vim.log.levels.WARN)
+              return vim.notify("redline: merge not applied (see the split; q closes it)", vim.log.levels.WARN)
             end
-            if vim.fn.confirm("Merged and reloaded. Review it, then push to Overleaf now?", "&Yes\n&No", 2) == 1 then
-              push()
-            end
+            confirm_push("Merged and reloaded (agent notes in the split). Push now?")
           end)
       end)
     end))

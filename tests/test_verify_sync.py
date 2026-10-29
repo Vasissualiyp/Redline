@@ -95,16 +95,17 @@ def test_only_overleaf_changed_is_taken(paper):
     out = s.sync_to_overleaf(push=False)
     assert "Coauthor text" in s.proj.read()
     assert "Coauthor text" in (s.proj.dir / "base" / "paper.tex").read_text()
-    assert "Overleaf changed" in out
+    assert "Overleaf has new edits" in out
 
 
 def test_both_changed_clean_git(paper):
     s, overleaf = paper
     (overleaf / "paper.tex").write_text(FIX.read_text().replace("more text.", "Coauthor text."))
     s.proj.main.write_text(FIX.read_text().replace("Pop III stars", "Population III stars"))
-    out = s.sync_to_overleaf(push=False)
-    assert "choose who merges" in out and "git" in out
-    s.sync_to_overleaf("git", push=False, reuse=True)
+    chk = s.sync_check()
+    assert chk.both_changed == ["paper.tex"] and chk.clean
+    out = s.sync_to_overleaf(push=False, reuse=True)   # no agent asked for
+    assert "merged automatically" in out
     t = s.proj.read()
     assert "Coauthor text" in t and "Population III stars" in t
 
@@ -143,3 +144,48 @@ def test_agent_leaving_markers_applies_nothing(paper, tmp_path):
     assert s.proj.read() == before
     prompt = (s.proj.dir / "merge" / "INSTRUCTIONS.md").read_text()
     assert "paper.tex" in prompt and ".REMOTE" in prompt
+
+
+def test_local_edits_only_means_push(paper):
+    s, _ = paper
+    s.proj.main.write_text(FIX.read_text().replace("Pop III stars", "Population III stars"))
+    chk = s.sync_check()
+    assert chk.remote_unchanged and chk.local_changed == ["paper.tex"]
+
+
+def test_plain_ols_push_is_not_an_overleaf_change(paper):
+    """Pushed with `ols -l` behind redline's back: Overleaf == local, snapshot stale."""
+    s, overleaf = paper
+    edited = FIX.read_text().replace("Pop III stars", "Population III stars")
+    s.proj.main.write_text(edited)
+    (overleaf / "paper.tex").write_text(edited)
+    chk = s.sync_check()
+    assert chk.remote_unchanged and chk.caught_up == ["paper.tex"]
+    assert (s.proj.dir / "base" / "paper.tex").read_text() == edited  # snapshot refreshed
+
+
+def test_overleaf_edits_already_contained_locally(paper):
+    s, overleaf = paper
+    (overleaf / "paper.tex").write_text(FIX.read_text().replace("more text.", "Coauthor text."))
+    # local has Overleaf's edit plus more
+    s.proj.main.write_text(FIX.read_text().replace("more text.", "Coauthor text.")
+                           .replace("Pop III stars", "Population III stars"))
+    chk = s.sync_check()
+    assert chk.remote_unchanged and "paper.tex" in chk.caught_up
+
+
+def test_interactive_agent_without_tmux(paper, tmp_path, monkeypatch):
+    s, overleaf = paper
+    (overleaf / "paper.tex").write_text(FIX.read_text().replace("at a high rate.", "at a very high rate."))
+    s.proj.main.write_text(FIX.read_text().replace("at a high rate.", "at a moderate rate."))
+    script = tmp_path / "tui.py"
+    script.write_text(
+        "import re, json, pathlib\n"
+        "for name in json.load(open('files.json')):\n"
+        "    p = pathlib.Path(name)\n"
+        "    p.write_text(re.sub(r'<<<<<<< local\\n(.*?)=======\\n(.*?)>>>>>>> overleaf\\n', r'\\2', p.read_text(), flags=re.S))\n"
+        "pathlib.Path('RESOLUTION.md').write_text('took Overleaf')\n")
+    s.proj.cfg.agents["tui-fake"] = {"cmd": [sys.executable, str(script), "{prompt}"], "tui": True}
+    monkeypatch.delenv("TMUX", raising=False)
+    out = s.sync_to_overleaf("tui-fake", push=False)
+    assert "at a very high rate." in s.proj.read() and "took Overleaf" in out

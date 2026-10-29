@@ -65,7 +65,7 @@ gitsigns' `]c` is restored when you leave.
 | `s` (also visual) | verify the claim on this line / the selection, via refcheck or code |
 | `S` | send all open `% VERIFY` requests to the agent |
 | `c` / `F` | compile (errors go to quickfix) / send the errors to the agent |
-| `O` | **sync to Overleaf**: push if Overleaf is unchanged, otherwise pick an agent to merge first |
+| `O` / `Q` | **sync to Overleaf**: push; merge Overleaf's new edits first (git, or an agent for conflicts) / close the sync output |
 | `P` / `L` | pull+merge+push / pull (3-way merge) |
 | `q` `<Esc>` `i` | leave review mode |
 
@@ -126,27 +126,42 @@ They show as ✓, ✗ and ? signs, and you can also type requests in Overleaf.
 
 `O` in review mode, `<leader>jo`, `:Redline sync` or `redline sync overleaf` do this:
 
-1. Download Overleaf and compare it with the snapshot from the last sync.
-2. If Overleaf is unchanged, push after you confirm.
-3. If only Overleaf changed the files, take its version and push.
-4. If both sides changed a file, you choose who merges: `git` (offered only when
-   the merge is clean) or any agent from `[agents]`. The agent works in
-   `.redline/merge/`, which holds the file with conflict blocks and its
-   `.LOCAL`, `.BASE` and `.REMOTE` versions. It must leave no conflict markers and
-   writes `RESOLUTION.md`.
-5. Redline checks the result, replays any edits you made while the agent worked,
-   reloads nvim, and asks before pushing. The push still lints and compiles first.
+1. Download Overleaf and compare it with the snapshot from the last sync. A
+   file only counts as changed if Overleaf has something your copy doesn't.
+   A push made outside redline (plain `ols -l`, `sync.sh` uploading plots) just
+   refreshes the snapshot.
+2. If Overleaf has nothing new, push after you confirm. No agent is involved.
+3. If Overleaf's edits merge without conflicts, git merges them, then you
+   confirm the push. Still no agent.
+4. Only for real conflicts do you choose an agent. It works in `.redline/merge/`,
+   which holds the file with conflict blocks and its `.LOCAL`, `.BASE` and
+   `.REMOTE` versions. It must leave no markers and write `RESOLUTION.md` last.
+   Redline checks the result, replays edits you made meanwhile and reloads nvim.
+5. The push always lints and compiles first.
 
-Agents are command lines in which `{prompt}` is replaced by the task. They come
-from `~/.config/redline/config.toml` and/or the paper's `.redline.toml`:
+The output appears in one bottom split. Focus stays on the paper, `q`, `<Esc>`
+or `Q` close it, and it closes by itself once you answer the push prompt.
+
+Agents live under `[agents]`, in `~/.config/redline/config.toml` and/or the
+paper's `.redline.toml`, with `{prompt}` replaced by the task. A plain list
+runs headless. `{ cmd = [...], tui = true }` opens an interactive session in a
+tmux window called `merge`, which you can watch and steer; it closes once the
+merge is resolved. Defaults:
 
 ```toml
 [agents]
-claude = ["claude", "-p", "--permission-mode", "acceptEdits", "{prompt}"]   # default
-opencode = ["opencode", "run", "{prompt}"]                                  # default
-"opencode-kimi" = ["opencode", "run", "-m", "kimi/kimi-k2", "{prompt}"]
-"claude-opus" = ["claude", "-p", "--model", "opus", "--permission-mode", "acceptEdits", "{prompt}"]
+claude = { cmd = ["claude", "--permission-mode", "acceptEdits", "{prompt}"], tui = true }
+claude-headless = ["claude", "-p", "--permission-mode", "acceptEdits", "{prompt}"]
+opencode = ["opencode", "run", "{prompt}"]
+opencode-tui = { cmd = ["opencode", "--prompt", "{prompt}"], tui = true }
+# "opencode-kimi" = ["opencode", "run", "-m", "kimi/kimi-k2", "{prompt}"]
 ```
+
+On billing: Anthropic's help article "Use the Claude Agent SDK with your Claude
+plan" (October 2026) says `claude -p` draws from the same subscription limits
+as interactive use while you're signed in with your plan, unless an API key is
+set. A planned split into a separate credit was paused. The interactive
+default sidesteps the question either way.
 
 The chat agent can do the same through MCP: `sync_to_overleaf(agent=...)`, or it
 can resolve the workspace itself and then call `sync_finish`.

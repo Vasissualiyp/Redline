@@ -231,9 +231,8 @@ def push(proj: Project, force: bool = False, skip_pull: bool = False) -> SyncRep
     root = proj.cfg.root
     olignore = (root / ".olignore").read_text().splitlines() if (root / ".olignore").exists() else []
     for rel in _files(root):
-        if Path(rel).suffix in TEXT_EXT and not _ignored(rel, olignore):
-            (base / rel).parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(root / rel, base / rel)
+        if not _ignored(rel, olignore):
+            _copy_if_different(root / rel, base / rel)
     return rep
 
 
@@ -264,34 +263,51 @@ Rules:
 3. Never drop a \\chcomment, a `% VERIFIED`/`% VERIFY` line or a %Y/%N/%X marker
    that only one side has.
 4. Keep braces balanced; do not reformat or rewrap unrelated text.
-5. Finally write a short list of what you decided per conflict to RESOLUTION.md.
+5. As your very last step, write a short list of what you decided per conflict
+   to RESOLUTION.md (in an interactive session the window closes after that).
 """
 
 
 @dataclass
 class SyncCheck:
-    remote_changed: list[str] = field(default_factory=list)   # Overleaf changed since the last sync
+    # files where Overleaf has something the local copy does not
+    remote_changed: list[str] = field(default_factory=list)
     local_changed: list[str] = field(default_factory=list)
+    # text files changed on both sides (need a merge; see conflicts)
     both_changed: list[str] = field(default_factory=list)
     conflicts: dict[str, int] = field(default_factory=dict)    # trial merge: file -> conflict blocks
+    # binary files changed on both sides: the local version is kept
+    binary_kept: list[str] = field(default_factory=list)
+    # Overleaf differed from the snapshot but holds nothing new (e.g. pushed
+    # with plain `ols -l`); the snapshot was refreshed
+    caught_up: list[str] = field(default_factory=list)
 
     @property
     def remote_unchanged(self) -> bool:
         return not self.remote_changed
 
+    @property
+    def clean(self) -> bool:
+        return not any(self.conflicts.get(f, 0) for f in self.both_changed)
+
     def as_dict(self) -> dict:
         d = self.__dict__.copy()
         d["remote_unchanged"] = self.remote_unchanged
+        d["clean"] = self.clean
         return d
 
     def text(self) -> str:
         if self.remote_unchanged:
-            return "Overleaf unchanged since the last sync" + (
-                f"; local changes in {', '.join(self.local_changed)}" if self.local_changed else "")
-        s = "Overleaf changed: " + ", ".join(self.remote_changed)
-        if self.both_changed:
-            s += "\nchanged on both sides: " + ", ".join(
-                f"{f} ({self.conflicts.get(f, 0)} conflict block(s))" for f in self.both_changed)
+            s = "Overleaf has nothing new since the last sync"
+            if self.local_changed:
+                s += f"; local changes in {', '.join(self.local_changed)}"
+        else:
+            s = "Overleaf has new edits in: " + ", ".join(self.remote_changed)
+            if self.both_changed:
+                s += "\nchanged on both sides: " + ", ".join(
+                    f"{f} ({self.conflicts.get(f, 0)} conflict block(s))" for f in self.both_changed)
+        if self.binary_kept:
+            s += "\nbinary files changed on both sides (local kept): " + ", ".join(self.binary_kept[:10])
         return s
 
 
@@ -299,8 +315,28 @@ def _same(a: Path, b: Path) -> bool:
     return a.exists() and b.exists() and filecmp.cmp(a, b, shallow=False)
 
 
+def _copy_if_different(src: Path, dst: Path) -> None:
+    if not _same(src, dst):
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+
+
+def _ignore_patterns(root: Path) -> list[str]:
+    pats: list[str] = []
+    for name in (".olignore", ".gitignore"):
+        p = root / name
+        if p.exists():
+            pats += [ln.strip() for ln in p.read_text().splitlines() if ln.strip() and not ln.startswith("#")]
+    return pats
+
+
 def check(proj: Project, reuse: bool = False) -> SyncCheck:
-    """Compare Overleaf with the base snapshot. reuse: keep a download < 10 min old."""
+    """What Overleaf has that we don't. reuse: keep a download < 10 min old.
+
+    A file only counts as changed on Overleaf if merging it would change the
+    local copy; anything Overleaf merely caught up with (plain `ols -l`, plots
+    uploaded by sync.sh) just refreshes the snapshot.
+    """
     base = proj.dir / "base"
     if not base.exists():
         raise RedlineError("no merge base yet: run `redline sync init` once")
@@ -309,26 +345,44 @@ def check(proj: Project, reuse: bool = False) -> SyncCheck:
     if not (reuse and remote.exists() and time.time() - remote.stat().st_mtime < 600):
         remote = download(proj)
     root = proj.cfg.root
-    olignore = (root / ".olignore").read_text().splitlines() if (root / ".olignore").exists() else []
+    ignore = _ignore_patterns(root)
     chk = SyncCheck()
     proj.flush_editor()
     for rel in sorted(set(_files(remote)) | set(_files(base))):
-        if _ignored(rel, olignore):
+        if _ignored(rel, ignore):
             continue
         r, b, l = remote / rel, base / rel, root / rel
-        if not r.exists() and not b.exists():
+        if not r.exists():
+            continue  # deleted on Overleaf: never deletes locally
+        if _same(r, b):
+            if l.exists() and not _same(l, b):
+                chk.local_changed.append(rel)
             continue
-        if not _same(r, b) and (r.exists() or b.exists()):
-            chk.remote_changed.append(rel)
-            if l.exists() and b.exists() and not _same(l, b) and Path(rel).suffix in TEXT_EXT and r.exists():
-                chk.both_changed.append(rel)
-                merged, n = merge3(l.read_text(), b.read_text(), r.read_text())
-                chk.conflicts[rel] = _count_blocks(merged) if n else 0
-        elif l.exists() and b.exists() and not _same(l, b):
+        # Overleaf differs from the snapshot
+        if _same(r, l):
+            chk.caught_up.append(rel)
+            _copy_if_different(r, b)
+            continue
+        local_edited = l.exists() and b.exists() and not _same(l, b)
+        if not local_edited:
+            chk.remote_changed.append(rel)  # only Overleaf changed it: take it
+            continue
+        if Path(rel).suffix not in TEXT_EXT:
+            chk.binary_kept.append(rel)
+            continue
+        local_text = l.read_text()
+        merged, n = merge3(local_text, b.read_text(), r.read_text())
+        if not n and merged == local_text:
+            chk.caught_up.append(rel)  # Overleaf's edits are already here
+            _copy_if_different(r, b)
             chk.local_changed.append(rel)
+            continue
+        chk.remote_changed.append(rel)
+        chk.both_changed.append(rel)
+        chk.conflicts[rel] = _count_blocks(merged) if n else 0
     for rel in _files(root):
-        if Path(rel).suffix in TEXT_EXT and not _ignored(rel, olignore) and not (base / rel).exists() \
-                and rel not in chk.remote_changed:
+        if Path(rel).suffix in TEXT_EXT and not _ignored(rel, ignore) and not (base / rel).exists() \
+                and rel not in chk.remote_changed and rel not in chk.local_changed:
             chk.local_changed.append(rel)
     return chk
 
@@ -365,16 +419,25 @@ def prepare_merge(proj: Project, chk: SyncCheck) -> list[str]:
 
 
 def run_agent(proj: Project, agent: str, stream=None) -> int:
-    """Run a configured headless agent in the merge workspace; returns its exit code."""
-    cmd = proj.cfg.agents.get(agent)
-    if not cmd:
+    """Run a configured agent in the merge workspace; returns its exit code.
+
+    Headless agents stream their output. Interactive ones (tui = true) get a
+    tmux window "merge" in the current session; it is closed as soon as the
+    workspace is resolved (no conflict markers left and RESOLUTION.md written).
+    """
+    from .config import agent_spec
+    spec = proj.cfg.agents.get(agent)
+    if not spec:
         raise RedlineError(f"unknown agent {agent!r}; configured: {', '.join(proj.cfg.agents)}")
+    spec = agent_spec(spec)
     d = merge_dir(proj)
     names = json.loads((d / "files.json").read_text())
     prompt = MERGE_PROMPT.format(dir=d, files=", ".join(names))
-    argv = [a.replace("{prompt}", prompt).replace("{dir}", str(d)) for a in cmd]
+    argv = [a.replace("{prompt}", prompt).replace("{dir}", str(d)) for a in spec["cmd"]]
     if not shutil.which(argv[0]):
         raise RedlineError(f"agent command {argv[0]!r} not found on PATH")
+    if spec["tui"]:
+        return _run_tui(proj, agent, argv, d, list(names), stream)
     proc = subprocess.Popen(argv, cwd=d, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             stdin=subprocess.DEVNULL, text=True, env=_clean_env())
     try:
@@ -385,6 +448,50 @@ def run_agent(proj: Project, agent: str, stream=None) -> int:
     except subprocess.TimeoutExpired:
         proc.kill()
         raise RedlineError(f"agent {agent} timed out after {proj.cfg.merge_timeout}s")
+
+
+def _resolved(d: Path, names: list[str]) -> bool:
+    return (d / "RESOLUTION.md").exists() and all(
+        not MERGE_MARKERS.search((d / n).read_text()) for n in names)
+
+
+def _run_tui(proj: Project, agent: str, argv: list[str], d: Path, names: list[str], stream) -> int:
+    import os
+    import time
+    say = stream or (lambda s: None)
+    script = d / "run-agent.sh"
+    script.write_text("#!/bin/sh\ncd " + shlex.quote(str(d)) + "\nexec " + shlex.join(argv) + "\n")
+    if not os.environ.get("TMUX"):
+        # no tmux: run in this terminal
+        rc = subprocess.call(["sh", str(script)], env=_clean_env())
+        return 0 if _resolved(d, names) else (rc or 1)
+    pane = os.environ.get("TMUX_PANE", "")
+    session = subprocess.run(["tmux", "display", "-p", "-t", pane, "#{session_id}"],
+                             capture_output=True, text=True).stdout.strip()
+    win = subprocess.run(["tmux", "new-window", "-P", "-F", "#{window_id}", "-t", f"{session}:",
+                          "-n", "merge", "-c", str(d), "sh " + shlex.quote(str(script))],
+                         capture_output=True, text=True, env=_clean_env())
+    wid = win.stdout.strip()
+    if win.returncode != 0 or not wid:
+        raise RedlineError(f"could not open the tmux window for {agent}: {win.stderr.strip()}")
+    say(f"{agent} is merging interactively in tmux window 'merge' ({wid}); it closes by itself "
+        "once the conflicts are resolved and RESOLUTION.md is written.\n")
+    t0 = time.time()
+    while time.time() - t0 < proj.cfg.merge_timeout:
+        time.sleep(2)
+        alive = subprocess.run(["tmux", "list-windows", "-a", "-F", "#{window_id}"],
+                               capture_output=True, text=True).stdout.split()
+        if _resolved(d, names):
+            time.sleep(3)  # let the agent finish its last message
+            if wid in alive:
+                subprocess.run(["tmux", "kill-window", "-t", wid], capture_output=True)
+            say("merge resolved\n")
+            return 0
+        if wid not in alive:
+            say(f"the {agent} window was closed before the merge was resolved\n")
+            return 1
+    raise RedlineError(f"agent {agent} did not finish within {proj.cfg.merge_timeout}s "
+                       "(its tmux window is still open)")
 
 
 def finish_merge(proj: Project, chk: SyncCheck | None = None, use_git: bool = False) -> SyncReport:

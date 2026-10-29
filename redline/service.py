@@ -239,14 +239,15 @@ class Service:
             return "\n".join(out + [self.push_only()] if push else out)
         if chk.both_changed:
             names = _sync.prepare_merge(self.proj, chk)
-            if agent is None:
-                clean = all(chk.conflicts.get(f, 0) == 0 for f in chk.both_changed)
+            if chk.clean:
+                agent = "git"  # no conflicts: nothing for an agent to decide
+                out.append("no conflicts: merged automatically")
+            elif agent is None or agent == "git":
                 out.append(f"merge workspace: {_sync.merge_dir(self.proj)} ({', '.join(names)})")
-                out.append("choose who merges: " + ", ".join(self.proj.cfg.agents)
-                           + (", or git (merges cleanly)" if clean else "")
+                out.append("conflicts need a decision; choose who merges: " + ", ".join(self.proj.cfg.agents)
                            + "; or resolve the files there yourself and call sync_finish")
                 return "\n".join(out)
-            if agent != "git":
+            else:
                 rc = _sync.run_agent(self.proj, agent, stream)
                 if rc != 0:
                     return "\n".join(out + [f"agent {agent} exited with {rc}; nothing applied"])
