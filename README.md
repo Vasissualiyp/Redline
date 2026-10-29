@@ -120,6 +120,20 @@ any pane, bind a key in `tmux.conf`, e.g.
 `bind-key M-l run-shell "redline layout --next --session '#{session_name}'"`.
 That needs `redline` on tmux's PATH.
 
+## Restructuring
+
+Splitting or reordering stays reviewable:
+
+- **New list items and headings** are marked as `\item \added{…}` and
+  `\subsection{\added{…}}`. A `\item` or heading inside `\added` breaks the
+  build. A `%+item` / `%+heading` comment line tags inserted structure, so
+  rejecting the change also removes its bullet or heading. A deleted item
+  takes its bullet with it when accepted.
+- **Moved text** (`propose_move`) is struck at the old place and added at the new
+  one, each with a "Moved to / Moved here from" note.
+- **`plain_edit`** (untracked) refuses prose changes of more than a few words.
+  With `force` and a `reason` it leaves a visible `\chcomment`.
+
 ## Verifying claims
 
 Select a claim and press `s`, then pick refcheck (Zotero PDFs), code (the

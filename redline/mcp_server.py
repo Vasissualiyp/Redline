@@ -27,8 +27,10 @@ reject every suggestion from their editor. Rules:
   labels renumber after every edit, ids do not).
 - Run compile() after a batch of edits and fix what it reports. lint(fix=true) fixes
   markup problems mechanically.
-- Equations/environments cannot sit inside struck-out text: use plain_edit for them
-  and explain with add_comment.
+- Restructuring stays tracked: new list items/headings go through propose_insert
+  (\item and \section stay outside the markup automatically), relocated text through
+  propose_move. plain_edit is only for equations/environments and tiny typo fixes;
+  it refuses prose changes.
 - `% VERIFY <refcheck|code|any>: «claim»` lines are verification requests from the
   human: verification_requests() lists them; answer each with record_verification().
 """
@@ -135,11 +137,28 @@ def add_comment(anchor: str, text: str, section: str | None = None, occurrence: 
 
 
 @mcp.tool()
+def propose_move(text: str, after: str | None = None, before: str | None = None,
+                 comment: str | None = None, section: str | None = None,
+                 to_section: str | None = None, occurrence: int | None = None,
+                 tag: str | None = None, ctx: Context | None = None) -> str:
+    """Move text (sentences, a whole \item...) to a new place, tracked: \deleted where it
+    was and \added after/before the destination anchor, each with a "Moved" comment.
+    Use this for restructuring (splitting or reordering list items and paragraphs)."""
+    return _safe(svc().propose_move, text, after, before, comment, section, to_section,
+                 occurrence, _origin(ctx, tag))
+
+
+@mcp.tool()
 def plain_edit(old_text: str, new_text: str, section: str | None = None,
-               occurrence: int | None = None, ctx: Context | None = None) -> str:
-    """Untracked edit (no markup): equations, environments, typo fixes the human asked
-    for directly, or fixing broken markup. Prefer the propose_* tools otherwise."""
-    return _safe(svc().plain_edit, old_text, new_text, section, occurrence, _origin(ctx, None))
+               occurrence: int | None = None, reason: str | None = None, force: bool = False,
+               ctx: Context | None = None) -> str:
+    """UNTRACKED edit, the human does not see it as a change. Only for equations and
+    environments, a tiny typo fix the human asked for, or repairing broken markup.
+    Changing more than a few words of prose is refused: use propose_replace /
+    propose_insert / propose_delete / propose_move (they handle \item and headings).
+    force=true with reason= makes an exception and leaves a \chcomment explaining it."""
+    return _safe(svc().plain_edit, old_text, new_text, section, occurrence, _origin(ctx, None),
+                 reason, force)
 
 
 @mcp.tool()

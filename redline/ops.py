@@ -128,14 +128,71 @@ def resolve(doc: Document, decisions: list[Decision], *, comments: str = "auto",
             text = "" if arg is None else _strip_markers(src, arg.start, arg.end, doc.markers)
             if d.action == "reject" or it.kind == "deleted":
                 text = unmbox(text)
-            edits.append(TextEdit(it.start, it.end, text))
-            if it.comment is not None and not keep_comment(it.comment):
-                edits.append(TextEdit(it.comment.start, it.comment.end, ""))
+            drop_comment = it.comment is not None and not keep_comment(it.comment)
+            end = it.comment.end if drop_comment else it.end
+            new_struct = _new_struct(src, it.start, end) if it.kind == "added" else None
+            shell = None
+            if new_struct and d.action == "reject":
+                shell = new_struct[1]   # the \item/heading came with the change: drop it too
+            elif new_struct:
+                edits.append(TextEdit(*new_struct[0], ""))   # accepted: only the tag line goes
+            if shell is None and not text:
+                shell = _empty_shell(src, it.start, end)
+            if shell:
+                # the whole item / heading text went away: remove its \item or heading too
+                edits.append(TextEdit(shell[0], shell[1], ""))
+            else:
+                edits.append(TextEdit(it.start, it.end, text))
+                if drop_comment:
+                    edits.append(TextEdit(it.comment.start, it.comment.end, ""))
         mk = it.marker
         if mk is not None and not (it.start <= mk.start < it.end):
             if not (it.comment and it.comment.start <= mk.start < it.comment.end):
                 edits.append(_marker_removal(src, mk))
     return tidy_lines(src, edits)
+
+
+_ITEM_BEFORE = re.compile(r"\\item\b(?:[ \t]*\[[^\]]*\])?[ \t]*$")
+_ITEM_AFTER = re.compile(r"\s*(?=\\item\b|\\end\{)")
+_HEAD_BEFORE = re.compile(r"\\(?:sub)*section\*?[ \t]*(?:\[[^\]]*\])?[ \t]*\{[ \t]*$")
+_HEAD_AFTER = re.compile(r"[ \t]*\}(?:[ \t]*\\label\{[^{}]*\})?")
+
+
+_NEW_STRUCT = re.compile(r"\n[ \t]*%\+(item|heading)[ \t]*\n[ \t]*"
+                         r"(\\item\b(?:[ \t]*\[[^\]]*\])?[ \t]*|\\(?:sub)*section\*?[ \t]*(?:\[[^\]]*\])?[ \t]*\{[ \t]*)$")
+
+
+def _new_struct(src: str, start: int, end: int):
+    r"""For an added change right after a `%+item`/`%+heading` tagged \item or heading:
+    ((tag line span), (span removing tag + \item/heading + change)), else None."""
+    before = src[max(0, start - 300):start]
+    m = _NEW_STRUCT.search(before)
+    if not m:
+        return None
+    base = start - len(before)
+    tag = (base + m.start(), base + m.start() + len(m.group(0).split("\n")[1]) + 1)
+    stop = end
+    if m.group(1) == "heading":
+        a = _HEAD_AFTER.match(src, end)
+        if not a:
+            return None
+        stop = a.end()
+    return tag, (base + m.start(), stop)
+
+
+def _empty_shell(src: str, start: int, end: int) -> tuple[int, int] | None:
+    r"""Span to delete when removing src[start:end] would leave an empty \item
+    or an empty heading behind (the \item/heading included), else None."""
+    before = src[max(0, start - 200):start]
+    m = _ITEM_BEFORE.search(before)
+    if m and _ITEM_AFTER.match(src, end):
+        return start - (len(before) - m.start()), end
+    m = _HEAD_BEFORE.search(before)
+    if m:
+        a = _HEAD_AFTER.match(src, end)
+        if a:
+            return start - (len(before) - m.start()), a.end()
+    return None
 
 
 def tidy_lines(src: str, edits: list[TextEdit]) -> list[TextEdit]:

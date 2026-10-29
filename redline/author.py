@@ -11,7 +11,7 @@ import re
 from .lint import _PAR, balanced, mbox_fixes, split_paragraphs, wrap
 from .model import Change, Document, RedlineError, Span, TextEdit
 from .ops import apply
-from .parse import _ATTACH_GAP, mask
+from .parse import _ATTACH_GAP, mask, match_group
 from .select import find_section
 
 
@@ -110,15 +110,71 @@ def _comment_markup(text: str) -> str:
     return "\\chcomment{" + text + "}"
 
 
+# \item and headings cannot sit inside \added/\deleted ("Incomplete \iffalse"):
+# they stay outside, and only the item text / heading title is marked
+_STRUCT = re.compile(r"\\item\b(?:[ \t]*\[[^\]]*\])?|\\(?:sub)*section\*?[ \t]*(?:\[[^\]]*\])?[ \t]*\{")
+
+
+def _wrap_segment(macro: str, seg: str) -> str:
+    out = []
+    for i, p in enumerate(split_paragraphs(seg)):
+        if i % 2 or not p.strip():
+            out.append(p)
+            continue
+        core = p.strip()
+        lead, trail = p[:len(p) - len(p.lstrip())], p[len(p.rstrip()):]
+        out.append(lead + wrap(macro, core if macro == "added" else _protect_old(core)) + trail)
+    return "".join(out)
+
+
+NEW_MARK = {"item": "%+item", "heading": "%+heading"}  # inert lines tagging inserted structure
+
+
+def _mark(macro: str, text: str) -> str:
+    r"""\added/\deleted markup for text, keeping \item and headings outside it.
+
+    An inserted \item or heading gets a `%+item` / `%+heading` comment line above it,
+    so rejecting the change can remove the bullet/heading it brought (ops.resolve).
+    """
+    masked, _, _ = mask(text)
+    out, pos = [], 0
+    for m in _STRUCT.finditer(masked):
+        if m.start() < pos:
+            continue
+        pre = text[pos:m.start()]
+        body = pre.rstrip(" \t\n")
+        ws = pre[len(body):]
+        out.append(_wrap_segment(macro, body))
+        if macro == "added":
+            indent = ws.rsplit("\n", 1)[1] if "\n" in ws else ""
+            kind = "heading" if m.group(0).endswith("{") else "item"
+            out.append("\n" + NEW_MARK[kind] + "\n" + indent)
+        else:
+            out.append(ws)
+        if m.group(0).endswith("{"):  # heading: mark its title
+            e = match_group(masked, m.end() - 1)
+            out.append(text[m.start():m.end()] + _wrap_segment(macro, text[m.end():e]) + "}")
+            pos = e + 1
+        else:
+            out.append(text[m.start():m.end()])
+            pos = m.end()
+    out.append(_wrap_segment(macro, text[pos:]))
+    return "".join(out)
+
+
+def has_structure(text: str) -> bool:
+    return bool(_STRUCT.search(mask(text)[0]))
+
+
 def _paired(new: str, old: str | None) -> str:
-    """Markup for new/old text, split per paragraph when needed."""
+    r"""Markup for new/old text, split per paragraph and around \item/headings."""
     if old is None:
-        parts = split_paragraphs(new)
-        return "".join(p if i % 2 or not p.strip() else wrap("added", p) for i, p in enumerate(parts))
+        return _mark("added", new)
     if not new:
-        parts = split_paragraphs(old)
-        return "".join(p if i % 2 or not p.strip() else wrap("deleted", _protect_old(p))
-                       for i, p in enumerate(parts))
+        return _mark("deleted", old)
+    if has_structure(new) or has_structure(old):
+        # restructuring: strike the old text, add the new one (items stay outside)
+        return _mark("deleted", old) + ("\n" if not old.endswith("\n") else "") + _mark("added", new)
     np_ = split_paragraphs(new)
     op_ = split_paragraphs(old)
     if len(np_) == 1 and len(op_) == 1:
@@ -141,9 +197,24 @@ def _paired(new: str, old: str | None) -> str:
 
 
 def _float_end(doc: Document, pos: int) -> int | None:
+    """End of the float or other environment (not lists) that contains pos."""
     for fl in doc.floats:
         if fl.start <= pos < fl.end:
             return fl.end
+    masked, _, _ = mask(doc.src)
+    stack: list[str] = []
+    for m in re.finditer(r"\\(begin|end)\{([^{}]+)\}", masked[doc.body_start:pos]):
+        name = m.group(2)
+        if m.group(1) == "begin":
+            stack.append(name)
+        elif stack and stack[-1] == name:
+            stack.pop()
+    lists = {"itemize", "enumerate", "description", "document", "abstract"}
+    for name in reversed(stack):
+        if name not in lists:
+            end = masked.find("\\end{" + name + "}", pos)
+            if end >= 0:
+                return end + len("\\end{" + name + "}")
     return None
 
 
@@ -223,12 +294,78 @@ def add_comment(doc: Document, anchor: str, text: str, section: str | None = Non
     return [TextEdit(pos, pos, _comment_markup(text))]
 
 
+def _prose(text: str) -> list[str]:
+    t = mask(text)[0]
+    t = re.sub(r"\$[^$]*\$", " ", t)
+    t = re.sub(r"\\[A-Za-z@]+\*?", " ", t)
+    return re.findall(r"[A-Za-z]{2,}", t)
+
+
+PLAIN_PROSE_LIMIT = 3  # words of prose an untracked edit may change silently
+
+
 def plain_edit(doc: Document, old_text: str, new_text: str, section: str | None = None,
-               occurrence: int | None = None) -> list[TextEdit]:
+               occurrence: int | None = None, reason: str | None = None,
+               force: bool = False) -> list[TextEdit]:
+    r"""Untracked edit. Prose changes beyond a few words must be tracked instead;
+    with force + reason the edit is made and explained in a \chcomment."""
+    import difflib
     s, e = locate(doc, old_text, section, occurrence)
     _check_span(doc, s, e, what="old_text")
     _clean_arg(new_text, "new_text")
-    return [TextEdit(s, e, new_text)]
+    old = doc.src[s:e]
+    a, b = _prose(old), _prose(new_text)
+    sm = difflib.SequenceMatcher(None, a, b, autojunk=False)
+    changed = sum(max(i2 - i1, j2 - j1) for op, i1, i2, j1, j2 in sm.get_opcodes() if op != "equal")
+    structural = bool(re.search(r"\\begin\{|\\end\{|\\\[|\\\]|\$\$", mask(old + new_text)[0]))
+    if changed > PLAIN_PROSE_LIMIT and not force:
+        raise RedlineError(
+            f"plain_edit would change {changed} words of prose without the human seeing it. Track it: "
+            "propose_replace / propose_insert / propose_delete (\\item and headings are handled), or "
+            "propose_move to relocate text. Only if it truly cannot be tracked, pass force=true with reason=.")
+    if force and not reason:
+        raise RedlineError("force=true needs reason= (it becomes a visible \\chcomment)")
+    edits = [TextEdit(s, e, new_text)]
+    if reason or (structural and changed):
+        note = "Untracked edit" + (f": {reason}" if reason else " (environment/equation changed)")
+        end = _float_end(doc, e)
+        pos = end if end is not None else e
+        if pos == e:
+            edits = [TextEdit(s, e, new_text + _comment_markup(note))]
+        else:
+            edits.append(TextEdit(pos, pos, _comment_markup(note)))
+    return edits
+
+
+def propose_move(doc: Document, text: str, after: str | None = None, before: str | None = None,
+                 comment: str | None = None, section: str | None = None,
+                 to_section: str | None = None, occurrence: int | None = None) -> list[TextEdit]:
+    r"""Move text: \deleted where it was, \added at the destination, both commented."""
+    if bool(after) == bool(before):
+        raise RedlineError("give exactly one of after= or before= for the destination")
+    s, e = locate(doc, text, section, occurrence)
+    _check_span(doc, s, e, what="text to move")
+    old = doc.src[s:e]
+    _check_strikeable(old)
+    ts, te = locate(doc, after or before, to_section)
+    pos = te if after else ts
+    if s <= pos <= e:
+        raise RedlineError("the destination lies inside the text being moved")
+    _check_span(doc, pos, pos, what="destination")
+    src_sec, dst_sec = doc.section_at(s), doc.section_at(pos)
+    where = lambda sec: (f" §{sec.label}" if sec else "")
+    why = f" ({comment})" if comment else ""
+    out = _with_comment(doc, e, _mark("deleted", old), f"Moved to{where(dst_sec) or ' below'}{why}.")
+    out[0] = TextEdit(s, e, out[0].text)
+    moved = _mark("added", old)
+    prev = doc.src[pos - 1] if pos else "\n"
+    nxt = doc.src[pos] if pos < len(doc.src) else "\n"
+    if after and not prev.isspace() and not old[:1].isspace():
+        moved = " " + moved   # keep a word space at the destination
+    if before and not nxt.isspace() and not old[-1:].isspace():
+        moved = moved + " "
+    out += _with_comment(doc, pos, moved, f"Moved here from{where(src_sec) or ' above'}{why}.")
+    return out
 
 
 def revise_change(doc: Document, it: Change, new_text: str | None = None,

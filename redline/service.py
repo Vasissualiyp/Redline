@@ -149,10 +149,17 @@ class Service:
         return self._edit(lambda d: author.add_comment(d, anchor, text, section, occurrence),
                           "add_comment", origin)
 
-    def plain_edit(self, old_text, new_text, section=None, occurrence=None, origin=None):
-        self._edit(lambda d: author.plain_edit(d, old_text, new_text, section, occurrence),
-                   "plain_edit", origin)
-        return "replaced (untracked)"
+    def plain_edit(self, old_text, new_text, section=None, occurrence=None, origin=None,
+                   reason=None, force=False):
+        self._edit(lambda d: author.plain_edit(d, old_text, new_text, section, occurrence, reason, force),
+                   "plain_edit" + (f": {reason}" if reason else ""), origin)
+        return "replaced (untracked" + (", explained in a \\chcomment)" if reason else ")")
+
+    def propose_move(self, text, after=None, before=None, comment=None, section=None,
+                     to_section=None, occurrence=None, origin=None):
+        return self._edit(lambda d: author.propose_move(d, text, after, before, comment, section,
+                                                        to_section, occurrence),
+                          "propose_move", origin)
 
     def revise_change(self, id, new_text=None, comment=None, origin=None):
         return self._edit(lambda d: author.revise_change(d, d.find(id), new_text, comment),

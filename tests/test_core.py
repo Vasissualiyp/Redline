@@ -180,7 +180,7 @@ def test_author_replace_protects_citations(src):
 def test_author_paragraph_split(src):
     doc = parse(src)
     out = ops.apply(src, author.propose_insert(doc, " New one.\n\nNew two.", after="more text."))
-    assert "\\added{ New one.}\n\n\\added{New two.}" in out
+    assert " \\added{New one.}\n\n\\added{New two.}" in out
     assert not [i for i in lint.lint(parse(out)) if i.severity == "error"]
 
 
@@ -238,5 +238,5 @@ def test_insert_does_not_capture_existing_comment(src):
     d2 = parse(out)
     ym = [i for i in d2.items if i.kind == "comment" and "YM" in (i.body(out) or "")]
     assert ym, "standalone YM comment must stay standalone"
-    new = [i for i in d2.items if i.kind == "added" and i.new(out) == " extra"][0]
+    new = [i for i in d2.items if i.kind == "added" and i.new(out) == "extra"][0]
     assert new.comment is None
