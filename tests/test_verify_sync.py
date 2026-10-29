@@ -189,3 +189,25 @@ def test_interactive_agent_without_tmux(paper, tmp_path, monkeypatch):
     monkeypatch.delenv("TMUX", raising=False)
     out = s.sync_to_overleaf("tui-fake", push=False)
     assert "at a very high rate." in s.proj.read() and "took Overleaf" in out
+
+
+def test_overleaf_ahead_is_just_taken(paper):
+    s, overleaf = paper
+    (overleaf / "paper.tex").write_text(FIX.read_text().replace("more text.", "Coauthor text."))
+    chk = s.sync_check()
+    assert not chk.remote_unchanged and not chk.local_edits
+    out = s.sync_to_overleaf(push=True)   # push=True, but there is nothing to push
+    assert "nothing to push" in out and "Coauthor text." in s.proj.read()
+
+
+def test_in_sync_does_nothing(paper):
+    s, _ = paper
+    out = s.sync_to_overleaf(push=True)
+    assert "already in sync" in out
+
+
+def test_new_local_plot_counts_as_local_edit(paper):
+    s, _ = paper
+    (s.proj.cfg.root / "fig.pdf").write_bytes(b"%PDF-1.4 fake")
+    chk = s.sync_check()
+    assert chk.remote_unchanged and "fig.pdf" in chk.local_changed and chk.local_edits

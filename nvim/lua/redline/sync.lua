@@ -130,20 +130,28 @@ function M.sync()
       if not ok or type(chk) ~= "table" then
         return vim.notify("redline sync: " .. ((r.stderr or "") .. (r.stdout or "")), vim.log.levels.ERROR)
       end
+      -- one side simply behind the other: update it without asking
       if chk.remote_unchanged then
-        return confirm_push("Overleaf has nothing new since the last sync. Push your edits?")
+        if not chk.local_edits then
+          return vim.notify("redline: already in sync with Overleaf")
+        end
+        return push()
       end
       local what = table.concat(chk.remote_changed, ", ")
       if chk.clean then
         -- Overleaf edits that merge without conflicts: no agent needed
-        vim.notify("redline: merging Overleaf edits (" .. what .. ")…")
+        vim.notify("redline: taking Overleaf's edits (" .. what .. ")…")
         return run("sync overleaf --reuse-download --no-push --agent git", false, function(code, text)
           if code ~= 0 then
             show_output("merge failed")
             append(vim.split(text, "\n"))
             return
           end
-          confirm_push("Merged Overleaf's edits in " .. what .. " (no conflicts). Push now?")
+          if not chk.local_edits then
+            return vim.notify("redline: updated from Overleaf (" .. what .. "); nothing to push")
+          end
+          -- both sides had edits: let the human look at the merge before it goes up
+          confirm_push("Merged Overleaf's edits in " .. what .. " with yours (no conflicts). Push now?")
         end)
       end
       local opts = {}

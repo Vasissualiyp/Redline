@@ -286,6 +286,11 @@ class SyncCheck:
         return not self.remote_changed
 
     @property
+    def local_edits(self) -> bool:
+        """The local copy has something Overleaf does not."""
+        return bool(self.local_changed or self.both_changed or self.binary_kept)
+
+    @property
     def clean(self) -> bool:
         return not any(self.conflicts.get(f, 0) for f in self.both_changed)
 
@@ -293,6 +298,7 @@ class SyncCheck:
         d = self.__dict__.copy()
         d["remote_unchanged"] = self.remote_unchanged
         d["clean"] = self.clean
+        d["local_edits"] = self.local_edits
         return d
 
     def text(self) -> str:
@@ -379,9 +385,9 @@ def check(proj: Project, reuse: bool = False) -> SyncCheck:
         chk.remote_changed.append(rel)
         chk.both_changed.append(rel)
         chk.conflicts[rel] = _count_blocks(merged) if n else 0
-    for rel in _files(root):
-        if Path(rel).suffix in TEXT_EXT and not _ignored(rel, ignore) and not (base / rel).exists() \
-                and rel not in chk.remote_changed and rel not in chk.local_changed:
+    for rel in _files(root):  # new local files (text or plots) are local edits too
+        if not _ignored(rel, ignore) and not (base / rel).exists() and not (remote / rel).exists() \
+                and rel not in chk.local_changed:
             chk.local_changed.append(rel)
     return chk
 

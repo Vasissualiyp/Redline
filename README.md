@@ -146,9 +146,11 @@ They show as ✓, ✗ and ? signs, and you can also type requests in Overleaf.
    file only counts as changed if Overleaf has something your copy doesn't.
    A push made outside redline (plain `ols -l`, `sync.sh` uploading plots) just
    refreshes the snapshot.
-2. If Overleaf has nothing new, push after you confirm. No agent is involved.
-3. If Overleaf's edits merge without conflicts, git merges them, then you
-   confirm the push. Still no agent.
+2. If one side is simply behind the other, update it without asking: push
+   when only you have new edits, take Overleaf's version when only Overleaf
+   has them (nothing to push then), and do nothing when both are the same.
+3. If both sides have edits and they merge without conflicts, git merges them,
+   then you confirm the push. Still no agent.
 4. Only for real conflicts do you choose an agent. It works in `.redline/merge/`,
    which holds the file with conflict blocks and its `.LOCAL`, `.BASE` and
    `.REMOTE` versions. It must leave no markers and write `RESOLUTION.md` last.

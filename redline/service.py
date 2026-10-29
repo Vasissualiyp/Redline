@@ -236,6 +236,8 @@ class Service:
         chk = _sync.check(self.proj, reuse)
         out = [chk.text()]
         if chk.remote_unchanged:
+            if not chk.local_edits:
+                return "\n".join(out + ["already in sync with Overleaf"])
             return "\n".join(out + [self.push_only()] if push else out)
         if chk.both_changed:
             names = _sync.prepare_merge(self.proj, chk)
@@ -253,6 +255,9 @@ class Service:
                     return "\n".join(out + [f"agent {agent} exited with {rc}; nothing applied"])
         rep = _sync.finish_merge(self.proj, chk, use_git=agent == "git")
         out.append(rep.text())
+        if not chk.local_edits and not rep.conflicts:
+            # Overleaf was simply ahead: the local copy is now identical, nothing to push
+            return "\n".join(out + ["local copy updated from Overleaf; nothing to push"])
         if rep.conflicts or not push:
             return "\n".join(out)
         return "\n".join(out + [self.push_only()])

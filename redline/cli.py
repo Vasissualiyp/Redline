@@ -282,10 +282,8 @@ def _sync_cmd(s, a: argparse.Namespace) -> int:
     if agent is None:
         chk = s.sync_check(a.reuse_download)
         print(chk.text())
-        if chk.remote_unchanged:
-            if not a.yes and input("Push to Overleaf? [y/N] ").strip().lower() != "y":
-                return 0
-            return done(s.push_only())
+        if chk.remote_unchanged:  # Overleaf is behind (or equal): just update it
+            return done(s.push_only() if chk.local_edits else "already in sync with Overleaf")
         if chk.both_changed and not chk.clean:
             opts = list(s.proj.cfg.agents)
             for i, n in enumerate(opts, 1):
@@ -299,7 +297,7 @@ def _sync_cmd(s, a: argparse.Namespace) -> int:
     print(out)
     if "CONFLICT" in out or "nothing applied" in out:
         return 1
-    if a.no_push:
+    if a.no_push or "nothing to push" in out:
         return 0
     if not a.yes and input("Push the merged paper to Overleaf? [y/N] ").strip().lower() != "y":
         return 0
