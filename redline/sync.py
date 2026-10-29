@@ -122,10 +122,9 @@ def download(proj: Project) -> Path:
 
 
 def _files(d: Path) -> list[str]:
-    skip = {".redline", ".git"}
+    # dotfiles (.git, .redline, .olignore, .olauth, ...) never live on Overleaf
     return sorted(str(p.relative_to(d)) for p in d.rglob("*")
-                  if p.is_file() and not skip & set(p.relative_to(d).parts)
-                  and p.name != ".olauth")
+                  if p.is_file() and not any(part.startswith(".") for part in p.relative_to(d).parts))
 
 
 def init_base(proj: Project) -> SyncReport:

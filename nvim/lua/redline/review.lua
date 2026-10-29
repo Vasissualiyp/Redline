@@ -529,6 +529,7 @@ function M.buffer_maps(buf)
   map("n", p .. "S", function() require("redline.verify").send_all() end, "send open verify requests")
   map("n", p .. "o", function() require("redline.sync").sync() end, "sync to Overleaf")
   map("n", p .. "q", function() require("redline.sync").close() end, "close the sync output split")
+  map("n", p .. "Q", function() require("redline.quit").quit() end, "close the whole redline session (asks)")
   map("n", p .. "w", function() require("redline.layout").pick() end, "pane layout preset")
   map("n", p .. "W", function() require("redline.layout").next() end, "next pane layout")
 end

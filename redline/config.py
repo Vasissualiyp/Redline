@@ -25,6 +25,8 @@ agent_kind = "claude"
 # portrait ones), default, columns, rows, pdf-tall, agent-bottom, pdf-left,
 # paper-top. Switch later with W in review mode or `redline layout`.
 layout = "auto"
+# tmux key (after the prefix) that asks to close the whole session; "" = none.
+tmux_quit_key = "Q"
 # Overleaf sync (overleaf-sync's `ols`); project defaults to the directory name.
 ols = "ols"
 overleaf_project = ""
@@ -81,6 +83,7 @@ class Config:
     agent: str = "claude"
     agent_kind: str = "claude"
     layout: str = "auto"
+    tmux_quit_key: str = "Q"
     ols: str = "ols"
     overleaf_project: str = ""
     keep_comment_regex: str = "TODO"
@@ -157,7 +160,7 @@ def load(root: Path | None = None) -> Config:
     legacy = dict(DEFAULT_LEGACY)
     legacy.update(data.get("legacy", {}))
     cfg = Config(root=root, main=main)
-    for k in ("code_dir", "agent", "agent_kind", "layout", "ols", "overleaf_project",
+    for k in ("code_dir", "agent", "agent_kind", "layout", "tmux_quit_key", "ols", "overleaf_project",
               "keep_comment_regex", "pre_push"):
         if k in data:
             setattr(cfg, k, str(data[k]))

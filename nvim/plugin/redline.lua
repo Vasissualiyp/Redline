@@ -16,6 +16,7 @@ local subcommands = {
   acceptall = function() require("redline.review").accept_all() end,
   sync = function() require("redline.sync").sync() end,
   close = function() require("redline.sync").close() end,
+  quit = function() require("redline.quit").quit() end,
   layout = function(args)
     if args[2] then require("redline.layout").apply(args[2]) else require("redline.layout").pick() end
   end,

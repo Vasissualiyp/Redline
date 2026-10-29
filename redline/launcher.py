@@ -147,6 +147,7 @@ def open_workspace(root: Path | None, attach: bool = True) -> int:
                 _layout.apply(proj.cfg.layout, _tmux("display", "-p", "-t", editor, "#{window_id}"))
             except Exception as e:  # a bad preset name must not stop the session
                 print(f"layout {proj.cfg.layout!r}: {e}", file=sys.stderr)
+    bind_quit_key(proj.cfg.tmux_quit_key)
     if not attach:
         print(name)
         return 0
@@ -155,3 +156,87 @@ def open_workspace(root: Path | None, attach: bool = True) -> int:
     else:
         os.execvp("tmux", ["tmux", "attach-session", "-t", f"={name}"])
     return 0
+
+
+# ---- quitting the whole workspace ------------------------------------------------
+def _session_of_caller() -> str:
+    pane = os.environ.get("TMUX_PANE")
+    if not pane:
+        raise RuntimeError("not inside tmux; pass --session")
+    return _tmux("display", "-p", "-t", pane, "#{session_name}")
+
+
+def _session_root(session: str) -> Path | None:
+    r = subprocess.run(["tmux", "show-environment", "-t", f"={session}", "REDLINE_ROOT"],
+                       capture_output=True, text=True)
+    line = r.stdout.strip()
+    return Path(line.split("=", 1)[1]) if r.returncode == 0 and "=" in line else None
+
+
+def quit_status(session: str) -> dict:
+    """What would be lost or interrupted by closing the session."""
+    root = _session_root(session)
+    windows = _tmux("list-windows", "-t", f"={session}", "-F", "#{window_name}").splitlines()
+    st = {"session": session, "redline": root is not None, "windows": windows,
+          "agent_running": "merge" in windows, "unpushed": [], "root": str(root or "")}
+    if root is None:
+        return st
+    proj = Project.open(root)
+    proj.flush_editor()
+    base = proj.dir / "base"
+    if base.exists():
+        ignore = _sync._ignore_patterns(root)
+        st["unpushed"] = [rel for rel in _sync._files(root)
+                          if not _sync._ignored(rel, ignore) and not _sync._same(root / rel, base / rel)]
+    return st
+
+
+def quit_now(session: str) -> None:
+    root = _session_root(session)
+    if root is not None:
+        Project.open(root).flush_editor()  # nvim writes its buffer first
+    _tmux("kill-session", "-t", f"={session}")
+
+
+def _tmux_arg(cmd: list[str]) -> str:
+    """A shell command as one tmux argument (paths here never contain quotes)."""
+    return "'" + " ".join(shlex.quote(c) for c in cmd).replace("'", "'\\''") + "'"
+
+
+def quit_menu(session: str, client: str | None) -> None:
+    """tmux menu that asks before closing every window of the session."""
+    st = quit_status(session)
+    if not st["redline"]:
+        _tmux("display-message", *(["-c", client] if client else []),
+              "prefix Q closes redline sessions only")
+        return
+    info = [f"-{len(st['windows'])} windows: {', '.join(st['windows'])}"]
+    if st["unpushed"]:
+        files = ", ".join(st["unpushed"][:3]) + (" …" if len(st["unpushed"]) > 3 else "")
+        info.append(f"-#[fg=yellow]Not on Overleaf yet: {files}")
+    else:
+        info.append("-Everything is on Overleaf")
+    if st["agent_running"]:
+        info.append("-#[fg=red]A merge agent is still running")
+    quit_cmd = "run-shell " + _tmux_arg(["env", "-u", "PYTHONPATH", *_env_assign(), *redline_cmd(),
+                                         "quit", "--yes", "--session", session])
+    args = ["display-menu", "-T", "#[align=centre] Close redline? ", "-x", "C", "-y", "C"]
+    if client:
+        args += ["-c", client]
+    for line in info:
+        args += [line, "", ""]
+    args += ["", "Quit: save and close everything", "y", quit_cmd, "Cancel", "n", ""]
+    _tmux(*args)
+
+
+def _env_assign() -> list[str]:
+    return [f"PYTHONPATH={REPO}"] if redline_cmd()[0] == sys.executable else []
+
+
+def bind_quit_key(key: str) -> None:
+    """prefix <key> anywhere in a redline session opens the quit menu."""
+    if not key:
+        return
+    cmd = ["env", "-u", "PYTHONPATH", *_env_assign(), *redline_cmd(), "quit", "--menu",
+           "--session", "#{session_name}", "--client", "#{client_name}"]
+    subprocess.run(["tmux", "bind-key", key, "run-shell", " ".join(cmd)], capture_output=True)

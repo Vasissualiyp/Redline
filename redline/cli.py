@@ -107,6 +107,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--list", action="store_true")
     p.add_argument("--json", action="store_true")
     p.add_argument("--session", help="tmux session (default: the current one)")
+    p = sub.add_parser("quit", help="close the whole tmux workspace (asks first)")
+    p.add_argument("--session", help="tmux session (default: the current one)")
+    p.add_argument("--client", help="tmux client to show the menu on")
+    p.add_argument("--menu", action="store_true", help="ask with a tmux menu")
+    p.add_argument("--status", action="store_true", help="only report what would be closed")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--yes", action="store_true", help="close without asking")
     p = sub.add_parser("open", help="start the tmux workspace")
     p.add_argument("dir", nargs="?")
     p.add_argument("--no-attach", action="store_true")
@@ -132,6 +139,26 @@ def _run(a: argparse.Namespace) -> int:
     if a.cmd == "open":
         from .launcher import open_workspace
         return open_workspace(Path(a.dir).expanduser() if a.dir else None, attach=not a.no_attach)
+    if a.cmd == "quit":
+        from . import launcher as LA
+        session = a.session or LA._session_of_caller()
+        if a.status:
+            st = LA.quit_status(session)
+            print(json.dumps(st) if a.json else
+                  f"{session}: {len(st['windows'])} windows; not on Overleaf: {st['unpushed'] or 'nothing'}"
+                  + ("; merge agent running" if st["agent_running"] else ""))
+        elif a.yes:
+            LA.quit_now(session)
+        elif a.menu:
+            LA.quit_menu(session, a.client)
+        else:
+            st = LA.quit_status(session)
+            print(f"{len(st['windows'])} windows: {', '.join(st['windows'])}")
+            if st["unpushed"]:
+                print("not on Overleaf yet: " + ", ".join(st["unpushed"]))
+            if input("Close all of them? [y/N] ").strip().lower() == "y":
+                LA.quit_now(session)
+        return 0
     if a.cmd == "layout":
         from . import layout as L
         if a.list or not (a.name or a.next or a.prev):

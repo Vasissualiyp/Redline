@@ -81,6 +81,17 @@ To put the status in your statusline, use `require('redline').status()`
 
 Undo is ordinary vim undo. Accepting and rejecting are applied as buffer edits.
 
+## Quitting
+
+`prefix Q` in any pane of a redline session (or `<leader>jQ`, `:Redline quit`,
+`redline quit`) asks first. A menu shows the windows, any files not yet on
+Overleaf (compared with the last-sync snapshot, without downloading) and
+whether a merge agent is still running. Quitting saves the nvim buffer, then
+closes every window of the session. From nvim you also get a "Sync to Overleaf
+first" button. Change the key with `tmux_quit_key` in `.redline.toml`, or set
+it to `""` for none. The binding is global in tmux, but it does nothing
+outside redline sessions.
+
 ## Pane layouts
 
 `W` in review mode, `<leader>jw`, `:Redline layout <name>` or
