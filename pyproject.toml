@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "redline"
+version = "0.1.0"
+description = "Review AI-suggested LaTeX `changes` edits from nvim, tmux and MCP"
+requires-python = ">=3.11"
+dependencies = ["mcp", "pillow"]
+
+[project.scripts]
+redline = "redline.cli:main"
+
+[tool.setuptools]
+packages = ["redline"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["latex: needs a working latexmk/TeX install (slow)"]

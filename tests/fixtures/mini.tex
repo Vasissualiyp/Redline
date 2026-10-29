@@ -1,0 +1,35 @@
+\documentclass{article}
+\usepackage[normalem]{ulem}
+\usepackage{natbib}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{verbatim}
+\usepackage[markup=default,commentmarkup=footnote,authormarkup=none,commandnameprefix=ifneeded]{changes}
+\newcommand{\skadd}[1]{{\textcolor{orange}{#1}}}
+\begin{document}
+\begin{abstract}
+We study \added{magnetised} discs.
+\end{abstract}
+
+\section{Introduction}\label{sec:intro}
+Pop III stars form in minihaloes \citep{abel02}.
+The sink \replaced{accretes}{grows}\chcomment{Shorter wording.} at a high rate.
+\deleted{This sentence goes away.}
+Text with a 100\% literal and % a comment with {braces
+more text.
+
+\subsection{Details}
+Here \added{an inserted clause, }the cooling rate rises. %N why this clause?
+And \deleted{old \mbox{\citep{abel02}} claim}\chcomment{TODO: check later} done.
+\chcomment{YM: standalone coauthor comment}
+\skadd{legacy addition} here.
+
+\section{Simulation and Methods}
+We use GIZMO \added{with MFM}. %X
+\replaced{New method}{Old method} is used.
+
+\begin{verbatim}
+\added{not markup}
+\end{verbatim}
+
+\end{document}
