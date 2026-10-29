@@ -19,6 +19,11 @@ reject every suggestion from their editor. Rules:
 - One proposal per idea; add a short `comment` when the reason is not obvious
   (it becomes a \\chcomment footnote). Prefix comments that answer a coauthor note
   with "Resolved:" / keep "TODO" in ones that need human input.
+- Check before you propose: you can read the whole paper (read(section=...) for a full
+  section) and the analysis code. Never leave a TODO for a check you can run yourself
+  ("check the wording matches §X", "verify this number"): read it, make the text
+  consistent, then propose. TODO is only for the author's decisions, or for checks you
+  cannot run (say which and why).
 - Review markers: the human writes %Y (accept), %N [note] (keep pending; the note is
   feedback for you) and %X (reject) next to changes. Read review_notes() first when
   asked to address feedback; revise_change() a %N suggestion instead of stacking a
