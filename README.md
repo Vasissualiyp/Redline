@@ -60,7 +60,7 @@ gitsigns' `]c` is restored when you leave.
 | `d` (also visual) | ask the agent about this change / the selection |
 | `A` `R` `M` (also visual) | accept / reject / apply markers in the section, heading or selection |
 | `K` / `gl` | details / list of all changes (Telescope) |
-| `p` / `f` | show in the PDF pane / toggle follow |
+| `p` / `f` | show in the PDF pane / toggle follow. The PDF marks the change's own words with a highlighter, or the cursor line's words outside a change |
 | `W` | pane layout preset (also `<leader>jw`; `<leader>jW` cycles) |
 | `s` (also visual) | verify the claim on this line / the selection, via refcheck or code |
 | `S` | send all open `% VERIFY` requests to the agent |
@@ -89,6 +89,7 @@ nothing restarts, and the PDF re-renders at the new size.
 
 | preset | arrangement |
 |---|---|
+| `auto` | `pdf-tall` on a landscape window, `paper-top` on a portrait one (the default) |
 | `default` | paper \| agent over PDF |
 | `columns` | paper \| agent \| PDF |
 | `rows` | paper / agent / PDF, stacked |
@@ -98,7 +99,7 @@ nothing restarts, and the PDF re-renders at the new size.
 | `paper-top` | paper on top, agent \| PDF below |
 | `focus` | toggle the paper pane fullscreen (tmux zoom) |
 
-`layout = "..."` in `.redline.toml` picks the arrangement at start. To switch from
+`layout = "..."` in `.redline.toml` picks the arrangement at start (default `auto`). To switch from
 any pane, bind a key in `tmux.conf`, e.g.
 `bind-key M-l run-shell "redline layout --next --session '#{session_name}'"`.
 That needs `redline` on tmux's PATH.

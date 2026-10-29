@@ -1,9 +1,10 @@
 """PDF pane: shows the page for a source line, highlighted, via kitty graphics.
 
-nvim sends {"line": L, "col": C} (or {"page": P}) to the preview socket;
-synctex maps the line to page boxes, pdftoppm renders the page, Pillow draws
-the highlight and `kitten icat` puts it in this tmux pane (unicode placeholders,
-so tmux redraws keep it). Re-renders when the PDF is rebuilt.
+nvim sends {"line": L, "col": C, "text": excerpt} (or {"page": P}) to the
+preview socket. synctex maps the line to the page; the excerpt's words are found
+on it (pdfmatch) and marked like a highlighter pen (multiply blend, so the ink
+stays black). pdftoppm renders, `kitten icat` shows it in this tmux pane
+(unicode placeholders, so tmux redraws keep it). Re-renders when the PDF changes.
 
 keys: j/k or space/b next/prev page, +/- zoom, 0 fit, z crop to the highlight,
       f toggle follow, r redraw, q quit
@@ -24,16 +25,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import compile as _compile
+from . import pdfmatch
+from .pdfmatch import Rect
 from .state import Project
 
-
-@dataclass
-class Box:
-    page: int
-    x: float
-    y: float
-    w: float
-    h: float
+HIGHLIGHTER = (255, 226, 70)  # marker yellow; multiplied into the page
 
 
 @dataclass
@@ -42,11 +38,15 @@ class View:
     zoom: float = 1.0
     crop: bool = False
     follow: bool = True
-    boxes: list[Box] = field(default_factory=list)
+    rects: list[Rect] = field(default_factory=list)
     status: str = ""
+    line: int = 0
+    end: int = 0
+    text: str = ""
 
 
-def synctex_boxes(tex: Path, pdf: Path, line: int, col: int = 0) -> list[Box]:
+def synctex_boxes(tex: Path, pdf: Path, line: int, col: int = 0) -> list[Rect]:
+    """Line boxes for a source line. synctex's v is the TOP of the box."""
     if not shutil.which("synctex") or not pdf.exists():
         return []
     try:
@@ -62,7 +62,9 @@ def synctex_boxes(tex: Path, pdf: Path, line: int, col: int = 0) -> list[Box]:
         if k in ("Page", "h", "v", "W", "H"):
             cur[k] = float(v)
             if all(x in cur for x in ("Page", "h", "v", "W", "H")):
-                boxes.append(Box(int(cur["Page"]), cur["h"], cur["v"] - cur["H"], cur["W"], cur["H"]))
+                if cur["W"] > 0:
+                    boxes.append(Rect(int(cur["Page"]), cur["h"], cur["v"],
+                                      cur["h"] + cur["W"], cur["v"] + cur["H"]))
                 cur = {}
     return boxes
 
@@ -116,13 +118,13 @@ class Pane:
         if not self.pdf.exists():
             self._status(f"no PDF yet ({self.pdf.name}); compile from nvim with c in review mode")
             return
-        from PIL import Image, ImageDraw
+        from PIL import Image, ImageChops, ImageDraw
 
         cw, ch = cell_size()
         px_w, px_h = cols * cw, rows * ch
         v = self.view
         v.page = max(1, min(v.page, self.pages))
-        boxes = [b for b in v.boxes if b.page == v.page]
+        boxes = [b for b in v.rects if b.page == v.page]
         # resolution: fit the page width to the pane, times zoom (crop zooms in 2x)
         zoom = v.zoom * (2.0 if v.crop and boxes else 1.0)
         dpi = max(30, min(600, int(px_w / (self.page_w / 72.0) * zoom)))
@@ -137,17 +139,20 @@ class Pane:
         img = Image.open(png).convert("RGB")
         s = dpi / 72.0
         if boxes:
-            over = Image.new("RGBA", img.size, (0, 0, 0, 0))
-            d = ImageDraw.Draw(over)
+            # highlighter pen: a yellow layer multiplied into the page, so the
+            # paper turns yellow behind the words and the ink stays black
+            pen = Image.new("RGB", img.size, (255, 255, 255))
+            d = ImageDraw.Draw(pen)
+            pad = max(1.0, 0.8 * s)
             for b in boxes:
-                r = (b.x * s - 3, b.y * s - 3, (b.x + b.w) * s + 3, (b.y + b.h * 1.35) * s + 3)
-                d.rectangle(r, fill=(255, 220, 0, 70), outline=(230, 60, 0, 255), width=2)
-            img = Image.alpha_composite(img.convert("RGBA"), over).convert("RGB")
+                d.rounded_rectangle((b.x0 * s - pad, b.y0 * s - pad, b.x1 * s + pad, b.y1 * s + pad),
+                                    radius=max(1, int(1.5 * s)), fill=HIGHLIGHTER)
+            img = ImageChops.multiply(img, pen)
         if (v.crop or v.zoom > 1.0) and img.width > px_w:
             # window of pane size centred on the highlight (or the page top)
             if boxes:
-                cx = sum(b.x + b.w / 2 for b in boxes) / len(boxes) * s
-                cy = sum(b.y + b.h / 2 for b in boxes) / len(boxes) * s
+                cx = sum((b.x0 + b.x1) / 2 for b in boxes) / len(boxes) * s
+                cy = sum((b.y0 + b.y1) / 2 for b in boxes) / len(boxes) * s
             else:
                 cx, cy = img.width / 2, px_h / 2
             x0 = int(max(0, min(img.width - px_w, cx - px_w / 2)))
@@ -155,7 +160,7 @@ class Pane:
             img = img.crop((x0, y0, x0 + px_w, y0 + px_h))
         elif boxes and img.height > px_h:
             # fit-width page taller than the pane: scroll so the highlight is visible
-            cy = sum(b.y for b in boxes) / len(boxes) * s
+            cy = min(b.y0 for b in boxes) * s
             y0 = int(max(0, min(img.height - px_h, cy - px_h / 3)))
             img = img.crop((0, y0, img.width, y0 + px_h))
         elif img.height > px_h:
@@ -194,24 +199,46 @@ class Pane:
         sys.stdout.flush()
 
     # ---- events -------------------------------------------------------------------
-    def goto_line(self, line: int, col: int = 0) -> None:
-        boxes = synctex_boxes(self.tex, self.pdf, line, col)
-        self.view.boxes = boxes
-        if boxes:
-            self.view.page = boxes[0].page
-            self.view.status = f"l.{line}"
+    def goto_line(self, line: int, col: int = 0, text: str = "", end: int = 0) -> None:
+        """Show the page of source lines line..end, highlighting `text` (the excerpt)."""
+        v = self.view
+        v.line, v.end, v.text = line, end, text
+        boxes = []
+        for ln in range(line, max(line, min(end, line + 25)) + 1):
+            boxes += synctex_boxes(self.tex, self.pdf, ln, col if ln == line else 0)
+        if not boxes:
+            v.rects, v.status = [], f"l.{line}: no synctex match (recompile?)"
+            return
+        # the page most of the line's boxes are on
+        pages = [b.page for b in boxes]
+        v.page = max(set(pages), key=pages.count)
+        near = [b for b in boxes if b.page == v.page]
+        rects = []
+        if text:
+            words = self._words(v.page)
+            rects = pdfmatch.locate(words, v.page, text, near)
+        if rects:
+            v.rects, v.status = rects, f"l.{line}"
         else:
-            self.view.status = f"l.{line}: no synctex match (recompile?)"
+            # excerpt not found as text (math, figure...): mark the source line's lines
+            v.rects, v.status = near, f"l.{line} (approximate)"
+
+    def _words(self, page: int):
+        key = (page, self.mtime)
+        if getattr(self, "_wcache", (None,))[0] != key:
+            self._wcache = (key, pdfmatch.page_words(self.pdf, page))
+        return self._wcache[1]
 
     def handle_msg(self, msg: dict) -> bool:
         if "line" in msg:
             if not self.view.follow and not msg.get("force"):
                 return False
-            self.goto_line(int(msg["line"]), int(msg.get("col", 0)))
+            self.goto_line(int(msg["line"]), int(msg.get("col", 0)), str(msg.get("text") or ""),
+                           int(msg.get("end") or 0))
             return True
         if "page" in msg:
             self.view.page = int(msg["page"])
-            self.view.boxes = []
+            self.view.rects = []
             return True
         return False
 
@@ -294,10 +321,9 @@ def main(proj: Project) -> int:
                 k = os.read(fd, 8).decode(errors="replace")
                 dirty |= pane.handle_key(k)
             if pane.check_pdf():
-                # rebuilt: refresh synctex boxes for the same line
-                if pane.view.status.startswith("l."):
-                    ln = int(re.match(r"l\.(\d+)", pane.view.status).group(1))
-                    pane.goto_line(ln)
+                # rebuilt: find the same excerpt again
+                if pane.view.line:
+                    pane.goto_line(pane.view.line, 0, pane.view.text, pane.view.end)
                 dirty = True
             size = shutil.get_terminal_size()
             if size != last_size:

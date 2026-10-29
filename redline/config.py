@@ -21,9 +21,10 @@ code_dir = "{code_dir}"
 # (agent_kind: "claude" writes .mcp.json, "opencode" writes opencode.json).
 agent = "claude"
 agent_kind = "claude"
-# Pane arrangement at start: default, columns, rows, pdf-tall, agent-bottom,
-# pdf-left, paper-top (switch later with W in review mode or `redline layout`).
-layout = "default"
+# Pane arrangement at start: auto (pdf-tall on landscape screens, paper-top on
+# portrait ones), default, columns, rows, pdf-tall, agent-bottom, pdf-left,
+# paper-top. Switch later with W in review mode or `redline layout`.
+layout = "auto"
 # Overleaf sync (overleaf-sync's `ols`); project defaults to the directory name.
 ols = "ols"
 overleaf_project = ""
@@ -64,7 +65,7 @@ class Config:
     code_dir: str = ""
     agent: str = "claude"
     agent_kind: str = "claude"
-    layout: str = "default"
+    layout: str = "auto"
     ols: str = "ols"
     overleaf_project: str = ""
     keep_comment_regex: str = "TODO"

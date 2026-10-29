@@ -11,7 +11,7 @@ def cells(s):
     return [tuple(map(int, m.groups())) for m in re.finditer(r"(\d+)x(\d+),(\d+),(\d+),(\d+)(?=[,}\]]|$)", s)]
 
 
-@pytest.mark.parametrize("name", [n for n in L.ORDER if n != "focus"])
+@pytest.mark.parametrize("name", [n for n in L.ORDER if n not in L.META])
 def test_presets_tile_the_window(name):
     s, order = L.layout_string(name, IDS, [], 200, 60)
     assert re.fullmatch(r"[0-9a-f]{4},.*", s)
@@ -33,3 +33,7 @@ def test_missing_and_extra_panes():
 def test_checksum_regression():
     # tmux 3.8 accepted this string with this checksum (select-layout rejects bad ones)
     assert L._checksum("120x40,0,0{30x40,0,0,39,50x40,31,0,37,38x40,82,0,38}") == "881d"
+
+
+def test_auto_is_not_a_layout_string():
+    assert "auto" in L.PRESETS and L.PRESETS["auto"][1] is None

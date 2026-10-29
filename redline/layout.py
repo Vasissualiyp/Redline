@@ -29,7 +29,9 @@ PRESETS: dict[str, tuple[str, object]] = {
     "paper-top": ("paper on top, agent | PDF below",
                   ("v", [("paper", 62), (("h", [("agent", 55), ("preview", 45)]), 38)])),
     "focus": ("toggle: paper pane fullscreen (tmux zoom)", None),
+    "auto": ("pdf-tall on a landscape window, paper-top on a portrait one", None),
 }
+META = ("focus", "auto")  # not arrangements themselves
 ORDER = list(PRESETS)
 
 
@@ -127,6 +129,8 @@ def apply(name: str, window: str | None = None) -> str:
     if name == "focus":
         _tmux("resize-pane", "-Z", "-t", by_role.get("paper") or current[0][0])
         return "toggled zoom on the paper pane"
+    if name == "auto":
+        return apply(auto_choice(window), window)
     if _tmux("display", "-p", "-t", window, "#{window_zoomed_flag}") == "1":
         _tmux("resize-pane", "-Z", "-t", current[0][0])  # unzoom first
     extra = [pid for pid, role in current if pid not in by_role.values()]
@@ -144,12 +148,21 @@ def apply(name: str, window: str | None = None) -> str:
     return f"layout {name}: {PRESETS[name][0]}"
 
 
+def auto_choice(window: str) -> str:
+    """pdf-tall when the window is landscape in pixels, paper-top otherwise."""
+    w, h, cw, ch = (_tmux("display", "-p", "-t", window,
+                          "#{window_width} #{window_height} #{client_cell_width} #{client_cell_height}")
+                    .split() + ["0", "0"])[:4]
+    cw, ch = (int(cw) or 10), (int(ch) or 20)
+    return "pdf-tall" if int(w) * cw >= int(h) * ch else "paper-top"
+
+
 def cycle(step: int = 1, window: str | None = None) -> str:
     window = window or find_window()
     try:
         cur = _tmux("show-options", "-wv", "-t", window, "@redline_layout")
     except RedlineError:
         cur = "default"
-    names = [n for n in ORDER if n != "focus"]
+    names = [n for n in ORDER if n not in META]
     i = names.index(cur) if cur in names else 0
     return apply(names[(i + step) % len(names)], window)

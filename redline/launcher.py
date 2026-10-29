@@ -141,7 +141,7 @@ def open_workspace(root: Path | None, attach: bool = True) -> int:
                           "-n", "code", "-c", code, "nvim .")
         _tmux("split-window", "-h", "-l", "35%", "-t", code_pane, "-c", code)
         _tmux("select-window", "-t", paper)
-        if proj.cfg.layout != "default":
+        if proj.cfg.layout and proj.cfg.layout != "default":  # the panes start as "default"
             from . import layout as _layout
             try:
                 _layout.apply(proj.cfg.layout, _tmux("display", "-p", "-t", editor, "#{window_id}"))

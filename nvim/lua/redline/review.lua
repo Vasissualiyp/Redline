@@ -25,7 +25,7 @@ local function goto_item(it)
   vim.cmd("normal! zv")
   local _, st = cur()
   if st and st.review and core.config.follow then
-    preview.show(st.root, it.range[1] + 1)
+    preview.show(st.root, it.lines[1], false, preview.excerpt(it), it.lines[2])
   end
 end
 
@@ -388,7 +388,7 @@ local REVIEW_KEYS = {
   { "n", "C", M.edit_comment, "edit/add the explaining comment" },
   { "n", "d", M.discuss, "ask the agent about this change" },
   { "x", "d", M.send_visual, "ask the agent about the selection" },
-  { "n", "p", function() local it = M.current(); preview.show(core.state().root, it and it.range[1] + 1 or vim.fn.line("."), true) end, "show in PDF pane" },
+  { "n", "p", function() preview.show_cursor(core.state().root, true) end, "show in PDF pane" },
   { "n", "A", function() M.resolve_range("accept", false) end, "accept section (or heading under cursor)" },
   { "x", "A", function() M.resolve_range("accept", true) end, "accept selection" },
   { "n", "R", function() M.resolve_range("reject", false) end, "reject section" },
@@ -457,7 +457,7 @@ function M.enter()
     buffer = buf,
     callback = function()
       if core.config.follow then
-        preview.show(st.root, vim.fn.line("."))
+        preview.show_cursor(st.root)
       end
     end,
   })
@@ -522,7 +522,7 @@ function M.buffer_maps(buf)
   map("n", p .. "r", function()
     vim.wo.conceallevel = vim.wo.conceallevel >= 2 and 0 or 2
   end, "toggle concealed/raw markup")
-  map("n", p .. "p", function() preview.show(core.state().root, vim.fn.line("."), true) end, "show in PDF")
+  map("n", p .. "p", function() preview.show_cursor(core.state().root, true) end, "show in PDF")
   map("n", p .. "s", function() require("redline.verify").request(false) end, "verify claim on this line")
   map("x", p .. "s", function() require("redline.verify").request(true) end, "verify selected claim")
   map("n", p .. "S", function() require("redline.verify").send_all() end, "send open verify requests")
