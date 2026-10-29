@@ -152,7 +152,13 @@ def _run(a: argparse.Namespace) -> int:
         elif a.yes:
             LA.quit_now(session)
         elif a.menu:
-            LA.quit_menu(session, a.client)
+            try:
+                LA.quit_menu(session, a.client)
+            except Exception as e:  # run-shell would only say "returned 1"
+                import subprocess
+                subprocess.run(["tmux", "display-message", *(["-c", a.client] if a.client else []),
+                                f"redline quit: {str(e).splitlines()[-1][:180]}"])
+                return 1
         else:
             st = LA.quit_status(session)
             print(f"{len(st['windows'])} windows: {', '.join(st['windows'])}")

@@ -276,6 +276,7 @@ def quit_menu(session: str, client: str | None) -> None:
     args = ["display-menu", "-T", "#[align=centre] Close redline? ", "-x", "C", "-y", "C"]
     if client:
         args += ["-c", client]
+    args.append("--")  # disabled items start with "-"; don't let tmux read them as flags
     for line in info:
         args += [line, "", ""]
     args += ["", "Quit: save and close everything", "y", quit_cmd, "Cancel", "n", ""]
