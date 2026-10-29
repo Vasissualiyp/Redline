@@ -33,3 +33,29 @@ def test_locate_prefers_near_boxes():
 
 def test_no_match_returns_nothing():
     assert locate(words_from(["completely different words here"]), 1, "accretion luminosity protostar", None) == []
+
+
+def test_locate_across_a_page_break():
+    a = words_from(["unrelated top text here", "the infall continues and the gas"], y=700.0)
+    b = words_from(["warms more slowly and stays warm", "Next paragraph starts"], y=60.0)
+    for w in a:
+        w.page = 16
+    for w in b:
+        w.page = 17
+    rects = locate(a + b, 16, "the infall continues and the gas warms more slowly and stays warm", None)
+    assert {r.page for r in rects} == {16, 17}
+    assert [r.page for r in rects] == [16, 17]
+
+
+def test_stitch_keeps_both_highlights_in_view():
+    from PIL import Image
+    from redline.preview import Pane
+    s = 2.0
+    pa, pb = Image.new("RGB", (1224, 1584), "white"), Image.new("RGB", (1224, 1584), "white")
+    rects = [Rect(16, 300, 700, 560, 712), Rect(17, 50, 66, 300, 76)]
+    img, hl = Pane._stitch([pa, pb], rects, s, (740.0, 60.0))
+    # first page cut at its middle, trimmed below its last text line; second
+    # trimmed above its first line and cut at its middle
+    assert img.height < 1584
+    (x0, y0, x1, y1), (u0, v0, u1, v1) = hl
+    assert 0 <= y0 < y1 <= img.height and 0 <= v0 < v1 <= img.height and y1 < v0

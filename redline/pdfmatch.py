@@ -32,6 +32,7 @@ class Word:
     x1: float
     y1: float
     text: str
+    page: int = 0  # 0: the page passed to locate()
 
 
 _WORD = re.compile(r'<word xMin="([\d.]+)" yMin="([\d.]+)" xMax="([\d.]+)" yMax="([\d.]+)">(.*?)</word>')
@@ -43,7 +44,7 @@ def page_words(pdf: Path, page: int) -> list[Word]:
                              capture_output=True, text=True, timeout=30).stdout
     except (OSError, subprocess.TimeoutExpired):
         return []
-    return [Word(float(a), float(b), float(c), float(d), html.unescape(t))
+    return [Word(float(a), float(b), float(c), float(d), html.unescape(t), page)
             for a, b, c, d, t in _WORD.findall(out)]
 
 
@@ -70,7 +71,8 @@ def _tokens(words: list[Word]) -> tuple[list[str], list[list[int]]]:
     i = 0
     while i < len(words):
         t, own = words[i].text, [i]
-        while t.endswith("-") and i + 1 < len(words) and words[i + 1].y0 > words[i].y0 + 2:
+        while t.endswith("-") and i + 1 < len(words) and (
+                words[i + 1].y0 > words[i].y0 + 2 or words[i + 1].page != words[i].page):
             i += 1
             t = t[:-1] + words[i].text
             own.append(i)
@@ -106,17 +108,22 @@ def _best_run(ex: list[str], toks: list[str]) -> tuple[int, int, int] | None:
 def line_rects(page: int, words: list[Word]) -> list[Rect]:
     rects: list[Rect] = []
     for w in words:
+        pg = w.page or page
         r = rects[-1] if rects else None
-        if r and abs(w.y0 - r.y0) < 2.5 and w.x0 >= r.x0 - 1:
+        if r and r.page == pg and abs(w.y0 - r.y0) < 2.5 and w.x0 >= r.x0 - 1:
             r.x1, r.y0, r.y1 = max(r.x1, w.x1), min(r.y0, w.y0), max(r.y1, w.y1)
         else:
-            rects.append(Rect(page, w.x0, w.y0, w.x1, w.y1))
+            rects.append(Rect(pg, w.x0, w.y0, w.x1, w.y1))
     return rects
 
 
 def locate(words: list[Word], page: int, excerpt: str,
            near: list[Rect] | None = None) -> list[Rect]:
-    """Highlight rectangles for `excerpt` on the page, or [] if it is not found."""
+    """Highlight rectangles for `excerpt`, or [] if it is not found.
+
+    `words` may come from two consecutive pages (each Word carries its page);
+    the excerpt can then run across the page break.
+    """
     ex = tex_tokens(excerpt)
     if not ex or not words:
         return []
@@ -124,11 +131,11 @@ def locate(words: list[Word], page: int, excerpt: str,
     if near:
         # synctex attributes a typeset line to the source line it starts in, so
         # the excerpt can begin a few lines above the boxes it returns
-        y0 = min(r.y0 for r in near) - 70
-        y1 = max(r.y1 for r in near) + 70
-        xs = [(r.x0 - 5, r.x1 + 5) for r in near]
-        pools.append([i for i, w in enumerate(words)
-                      if y0 <= w.y0 <= y1 and any(a <= w.x0 <= b for a, b in xs)])
+        def close(w: Word) -> bool:
+            pg = w.page or page
+            return any(r.page == pg and r.y0 - 70 <= w.y0 <= r.y1 + 70 and r.x0 - 5 <= w.x0 <= r.x1 + 5
+                       for r in near)
+        pools.append([i for i, w in enumerate(words) if close(w)])
     pools.append(list(range(len(words))))  # footnotes, captions far from the line
     need = max(1, min(3, len(ex)), int(0.35 * min(len(ex), 30)))
     best = None  # (matched, rank, idx); the near pool wins ties

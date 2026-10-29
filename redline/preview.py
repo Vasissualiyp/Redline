@@ -44,6 +44,7 @@ class View:
     line: int = 0
     end: int = 0
     text: str = ""
+    shown: tuple = ()  # two consecutive pages shown stitched, or () for v.page alone
 
 
 def synctex_boxes(tex: Path, pdf: Path, line: int, col: int = 0) -> list[Rect]:
@@ -121,58 +122,122 @@ class Pane:
         if not self.pdf.exists():
             self._status(f"no PDF yet ({self.pdf.name}); compile from nvim with c in review mode")
             return
-        from PIL import Image, ImageChops, ImageDraw
-
         cw, ch = cell_size()
         px_w, px_h = cols * cw, rows * ch
         v = self.view
         v.page = max(1, min(v.page, self.pages))
-        boxes = [b for b in v.rects if b.page == v.page]
+        pages = v.shown if len(v.shown) == 2 else (v.page,)
+        marked = [r for r in v.rects if r.page in pages]
         # resolution: fit the page width to the pane, times zoom (crop zooms in 2x)
-        zoom = v.zoom * (2.0 if v.crop and boxes else 1.0)
+        zoom = v.zoom * (2.0 if v.crop and marked else 1.0)
         dpi = max(30, min(600, int(px_w / (self.page_w / 72.0) * zoom)))
-        out = self.tmp / "page"
-        subprocess.run(["pdftoppm", "-f", str(v.page), "-l", str(v.page), "-r", str(dpi),
-                        "-png", "-singlefile", str(self.pdf), str(out)],
-                       capture_output=True, timeout=60)
-        png = out.with_suffix(".png")
-        if not png.exists():
-            self._status("pdftoppm failed")
-            return
-        img = Image.open(png).convert("RGB")
         s = dpi / 72.0
-        if boxes:
-            # highlighter pen: a yellow layer multiplied into the page, so the
-            # paper turns yellow behind the words and the ink stays black
-            pen = Image.new("RGB", img.size, (255, 255, 255))
-            d = ImageDraw.Draw(pen)
-            pad = max(1.0, 0.8 * s)
-            for b in boxes:
-                d.rounded_rectangle((b.x0 * s - pad, b.y0 * s - pad, b.x1 * s + pad, b.y1 * s + pad),
-                                    radius=max(1, int(1.5 * s)), fill=HIGHLIGHTER)
-            img = ImageChops.multiply(img, pen)
+        imgs = []
+        for pg in pages:
+            im = self._page_image(pg, dpi, [r for r in marked if r.page == pg])
+            if im is None:
+                self._status("pdftoppm failed")
+                return
+            imgs.append(im)
+        # highlight rectangles in image pixels (for scrolling to them)
+        hl = [(r.x0 * s, r.y0 * s, r.x1 * s, r.y1 * s) for r in marked]
+        if len(imgs) == 2:
+            # trim the empty page margins at the break (below the last line of
+            # the first page, above the first line of the next)
+            wa, wb = self._words(pages[0]), self._words(pages[1])
+            bounds = (max((w.y1 for w in wa), default=None), min((w.y0 for w in wb), default=None))
+            img, hl = self._stitch(imgs, marked, s, bounds)
+        else:
+            img = imgs[0]
         if (v.crop or v.zoom > 1.0) and img.width > px_w:
             # window of pane size centred on the highlight (or the page top)
-            if boxes:
-                cx = sum((b.x0 + b.x1) / 2 for b in boxes) / len(boxes) * s
-                cy = sum((b.y0 + b.y1) / 2 for b in boxes) / len(boxes) * s
+            if hl:
+                cx = sum((a + c) / 2 for a, _, c, _ in hl) / len(hl)
+                cy = sum((b + d) / 2 for _, b, _, d in hl) / len(hl)
             else:
                 cx, cy = img.width / 2, px_h / 2
             x0 = int(max(0, min(img.width - px_w, cx - px_w / 2)))
             y0 = int(max(0, min(img.height - px_h, cy - px_h / 2)))
             img = img.crop((x0, y0, x0 + px_w, y0 + px_h))
-        elif boxes and img.height > px_h:
+        elif hl and img.height > px_h:
             # fit-width page taller than the pane: scroll so the highlight is visible
-            cy = min(b.y0 for b in boxes) * s
-            y0 = int(max(0, min(img.height - px_h, cy - px_h / 3)))
+            top, bottom = min(b for _, b, _, _ in hl), max(d for _, _, _, d in hl)
+            y0 = top - px_h / 3 if bottom - top < px_h * 2 / 3 else top - px_h / 12
+            y0 = int(max(0, min(img.height - px_h, y0)))
             img = img.crop((0, y0, img.width, y0 + px_h))
         elif img.height > px_h:
             img = img.crop((0, 0, img.width, px_h))
+        png = self.tmp / "page.png"
         img.save(png)
         err = self._icat(png, cols, rows)
         flags = " ".join(x for x in ("follow" if v.follow else "", "crop" if v.crop else "",
                                      f"zoom {v.zoom:.1f}" if v.zoom != 1 else "") if x)
-        self._status(f"icat failed: {err}" if err else f"p.{v.page}/{self.pages}  {flags}  {v.status}")
+        where = f"p.{pages[0]}–{pages[1]}" if len(pages) == 2 else f"p.{v.page}"
+        self._status(f"icat failed: {err}" if err else f"{where}/{self.pages}  {flags}  {v.status}")
+
+    def _page_image(self, page: int, dpi: int, rects: list[Rect]):
+        from PIL import Image, ImageChops, ImageDraw
+        out = self.tmp / f"page-{page}"
+        subprocess.run(["pdftoppm", "-f", str(page), "-l", str(page), "-r", str(dpi),
+                        "-png", "-singlefile", str(self.pdf), str(out)],
+                       capture_output=True, timeout=60)
+        png = out.with_suffix(".png")
+        if not png.exists():
+            return None
+        img = Image.open(png).convert("RGB")
+        png.unlink()
+        if rects:
+            # highlighter pen: a yellow layer multiplied into the page, so the
+            # paper turns yellow behind the words and the ink stays black
+            s = dpi / 72.0
+            pen = Image.new("RGB", img.size, (255, 255, 255))
+            d = ImageDraw.Draw(pen)
+            pad = max(1.0, 0.8 * s)
+            for b in rects:
+                d.rounded_rectangle((b.x0 * s - pad, b.y0 * s - pad, b.x1 * s + pad, b.y1 * s + pad),
+                                    radius=max(1, int(1.5 * s)), fill=HIGHLIGHTER)
+            img = ImageChops.multiply(img, pen)
+        return img
+
+    @staticmethod
+    def _stitch(imgs, rects: list[Rect], s: float, text_bounds=(None, None)):
+        """Bottom half of the first page over the top half of the next one.
+
+        The cuts move outwards if the highlight starts above the middle of the
+        first page or ends below the middle of the second, so it is never cut.
+        text_bounds (last text line bottom on page 1, first text top on page 2,
+        in pt) trim the blank margins at the break.
+        """
+        from PIL import Image
+        a, b = imgs
+        end_a, start_b = text_bounds
+        if end_a is not None:
+            a = a.crop((0, 0, a.width, min(a.height, int((end_a + 8) * s))))
+        top_b = 0
+        if start_b is not None:
+            top_b = max(0, int((start_b - 8) * s))
+            b = b.crop((0, top_b, b.width, b.height))
+        pa, pb = rects[0].page if rects else 0, rects[-1].page if rects else 0
+        margin = 12 * s
+        cut_a = a.height // 2
+        cut_b = b.height // 2
+        on_a = [r for r in rects if r.page == pa]
+        on_b = [r for r in rects if r.page == pb and pb != pa]
+        if on_a:
+            cut_a = int(max(0, min(cut_a, min(r.y0 for r in on_a) * s - margin)))
+        if on_b:
+            cut_b = int(min(b.height, max(cut_b, max(r.y1 for r in on_b) * s - top_b + margin)))
+        gap = max(4, int(2 * s))
+        top, bottom = a.crop((0, cut_a, a.width, a.height)), b.crop((0, 0, b.width, cut_b))
+        img = Image.new("RGB", (max(a.width, b.width), top.height + gap + bottom.height), (150, 150, 150))
+        img.paste(top, (0, 0))
+        img.paste(bottom, (0, top.height + gap))
+        first = rects[0].page if rects else 0
+        hl = []
+        for r in rects:
+            dy = -cut_a if r.page == first else top.height + gap - top_b
+            hl.append((r.x0 * s, r.y0 * s + dy, r.x1 * s, r.y1 * s + dy))
+        return img, hl
 
     def _icat(self, png: Path, cols: int, rows: int) -> str:
         """Draw png in the pane. Returns an error message, or "" on success.
@@ -203,34 +268,45 @@ class Pane:
 
     # ---- events -------------------------------------------------------------------
     def goto_line(self, line: int, col: int = 0, text: str = "", end: int = 0) -> None:
-        """Show the page of source lines line..end, highlighting `text` (the excerpt)."""
+        """Show the page(s) of source lines line..end, highlighting `text` (the excerpt).
+
+        A change that runs over a page break is shown as the bottom of one page
+        stitched onto the top of the next.
+        """
         v = self.view
         v.line, v.end, v.text = line, end, text
         boxes = []
         for ln in range(line, max(line, min(end, line + 25)) + 1):
             boxes += synctex_boxes(self.tex, self.pdf, ln, col if ln == line else 0)
         if not boxes:
-            v.rects, v.status = [], f"l.{line}: no synctex match (recompile?)"
+            v.rects, v.shown, v.status = [], (), f"l.{line}: no synctex match (recompile?)"
             return
-        # the page most of the line's boxes are on
-        pages = [b.page for b in boxes]
-        v.page = max(set(pages), key=pages.count)
-        near = [b for b in boxes if b.page == v.page]
+        counts = [b.page for b in boxes]
+        main = max(set(counts), key=counts.count)
+        cand = (main, main + 1) if main + 1 in counts else (main - 1, main) if main - 1 in counts else (main,)
+        near = [b for b in boxes if b.page in cand]
         rects = []
         if text:
-            words = self._words(v.page)
-            rects = pdfmatch.locate(words, v.page, text, near)
-        if rects:
-            v.rects, v.status = rects, f"l.{line}"
-        else:
-            # excerpt not found as text (math, figure...): mark the source line's lines
-            v.rects, v.status = near, f"l.{line} (approximate)"
+            words = [w for pg in cand for w in self._words(pg)]
+            rects = pdfmatch.locate(words, main, text, near)
+        approximate = not rects
+        if approximate:
+            # excerpt not found as text (math, figure...): mark the source lines' lines
+            rects = near
+        on = sorted({r.page for r in rects})
+        v.rects = rects
+        v.shown = (on[0], on[1]) if len(on) >= 2 and on[1] == on[0] + 1 else ()
+        v.page = on[0] if v.shown else (main if main in on else on[0])
+        v.status = f"l.{line}" + (" (approximate)" if approximate else "")
 
     def _words(self, page: int):
-        key = (page, self.mtime)
-        if getattr(self, "_wcache", (None,))[0] != key:
-            self._wcache = (key, pdfmatch.page_words(self.pdf, page))
-        return self._wcache[1]
+        cache = getattr(self, "_wcache", {})
+        if cache.get("mtime") != self.mtime:
+            cache = {"mtime": self.mtime}
+        if page not in cache:
+            cache[page] = pdfmatch.page_words(self.pdf, page)
+        self._wcache = cache
+        return cache[page]
 
     def handle_msg(self, msg: dict) -> bool:
         if "line" in msg:
@@ -241,12 +317,15 @@ class Pane:
             return True
         if "page" in msg:
             self.view.page = int(msg["page"])
-            self.view.rects = []
+            self.view.rects, self.view.shown = [], ()
             return True
         return False
 
     def handle_key(self, k: str) -> bool:
         v = self.view
+        if k in ("j", " ", "\x1b[B", "l", "k", "b", "\x1b[A", "h", "g", "G") and v.shown:
+            v.page = v.shown[0]
+            v.shown = ()  # paging: one page at a time again
         if k in ("j", " ", "\x1b[B", "l"):
             v.page += 1
         elif k in ("k", "b", "\x1b[A", "h"):
