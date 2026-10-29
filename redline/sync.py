@@ -222,16 +222,30 @@ def push(proj: Project, force: bool = False, skip_pull: bool = False) -> SyncRep
             rep.messages.append(f"not pushing: pre_push failed:\n{(r.stdout + r.stderr)[-1500:]}")
             return rep
     proj.flush_editor()
-    out = _run_ols(proj, ["-l"], cwd=proj.cfg.root)
-    rep.pushed = True
-    rep.messages.append(out[-500:] if out else "")
-    # what we pushed is what Overleaf now has
-    base = proj.dir / "base"
+    # upload a frozen copy: edits made while ols runs (the push takes a while)
+    # must stay local edits, not slip into the snapshot without reaching Overleaf
     root = proj.cfg.root
     olignore = (root / ".olignore").read_text().splitlines() if (root / ".olignore").exists() else []
+    staging = proj.dir / "pushing"
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir()
     for rel in _files(root):
         if not _ignored(rel, olignore):
-            _copy_if_different(root / rel, base / rel)
+            (staging / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(root / rel, staging / rel)
+    if (root / ".olignore").exists():
+        shutil.copy2(root / ".olignore", staging / ".olignore")
+    try:
+        out = _run_ols(proj, ["-l"], cwd=staging)
+        rep.pushed = True
+        rep.messages.append(out[-500:] if out else "")
+        # what we pushed is what Overleaf now has
+        base = proj.dir / "base"
+        for rel in _files(staging):
+            _copy_if_different(staging / rel, base / rel)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
     return rep
 
 
@@ -520,8 +534,16 @@ def finish_merge(proj: Project, chk: SyncCheck | None = None, use_git: bool = Fa
                 continue
             l.parent.mkdir(parents=True, exist_ok=True)
             if l.resolve() == proj.main.resolve():
-                cur = proj.read()
-                proj.write(r.read_text(), expect=cur, reason="take Overleaf version")
+                proj.flush_editor()
+                cur, text = proj.read(), r.read_text()
+                b = base / rel
+                if b.exists() and cur != b.read_text():
+                    # edited since the check: keep those edits on top of Overleaf's
+                    text, n = merge3(cur, b.read_text(), text)
+                    if n:
+                        rep.conflicts[rel] = [i + 1 for i, ln in enumerate(text.splitlines())
+                                              if ln.startswith("<<<<<<<")]
+                proj.write(text, expect=cur, reason="take Overleaf version")
             else:
                 shutil.copy2(r, l)
             rep.merged.append(rel)

@@ -211,3 +211,39 @@ def test_new_local_plot_counts_as_local_edit(paper):
     (s.proj.cfg.root / "fig.pdf").write_bytes(b"%PDF-1.4 fake")
     chk = s.sync_check()
     assert chk.remote_unchanged and "fig.pdf" in chk.local_changed and chk.local_edits
+
+
+def test_edits_made_while_pushing_are_not_lost(paper, monkeypatch):
+    """The snapshot must be what was uploaded, not the file as it is after the upload."""
+    s, overleaf = paper
+    reviewed = FIX.read_text().replace("Pop III stars", "Population III stars")
+    s.proj.main.write_text(reviewed)
+
+    class Ok:
+        ok = True
+    monkeypatch.setattr(sync._compile, "run", lambda proj: Ok())
+
+    def fake_ols(proj, args, cwd, timeout=600):
+        assert args == ["-l"]
+        shutil.copy(cwd / "paper.tex", overleaf / "paper.tex")      # upload
+        proj.main.write_text(reviewed + "\n% accepted while uploading\n")  # the human keeps reviewing
+        return "Synced"
+    monkeypatch.setattr(sync, "_run_ols", fake_ols)
+
+    sync.push(s.proj, skip_pull=True)
+    assert (overleaf / "paper.tex").read_text() == reviewed
+    assert (s.proj.dir / "base" / "paper.tex").read_text() == reviewed
+    out = s.sync_to_overleaf(push=False)
+    assert "accepted while uploading" in s.proj.read(), out
+    assert s.sync_check().remote_unchanged and s.sync_check().local_edits
+
+
+def test_edit_between_check_and_take_is_kept(paper):
+    s, overleaf = paper
+    (overleaf / "paper.tex").write_text(FIX.read_text().replace("more text.", "Coauthor text."))
+    chk = s.sync_check()
+    assert chk.remote_changed and not chk.local_edits
+    s.proj.main.write_text(FIX.read_text().replace("Pop III stars", "Population III stars"))
+    sync.finish_merge(s.proj, chk)
+    t = s.proj.read()
+    assert "Coauthor text." in t and "Population III stars" in t
