@@ -5,7 +5,8 @@ left the source PDF (the PDF pane's renderer, with the Zotero highlight drawn
 as a highlighter), right the entry as text. q in either pane, or the nvim key
 again, closes the window.
 
-PDF pane keys: n/p next/previous source, o open the highlight in Zotero,
+PDF pane keys: n/p next/previous source, ]/[ next/previous claim of the same
+block of result lines (the note follows), o open the highlight in Zotero,
 j/k pages, +/- zoom, z crop, q close.
 """
 from __future__ import annotations
@@ -37,28 +38,69 @@ def zotero_rects(s: Source, pdf: Path) -> list[Rect]:
     return [Rect(page, x1, h - y2, x2, h - y1) for x1, y1, x2, y2 in s.rects]
 
 
+def block_ids(proj: Project, eid: str) -> list[str]:
+    """Ids of the result lines stacked with `eid` (one block of % comment lines)."""
+    from .parse import parse
+    from .verify import results
+    src = proj.read()
+    doc = parse(src)
+    by_line = {r.line: r for r in results(doc)}
+    me = next((r for r in by_line.values() if r.id == eid), None)
+    if me is None:
+        return [eid]
+    lines = src.splitlines()
+
+    def comment(n: int) -> bool:
+        return 1 <= n <= len(lines) and lines[n - 1].lstrip().startswith("%")
+    a = me.line
+    while comment(a - 1):
+        a -= 1
+    b = me.line
+    while comment(b + 1):
+        b += 1
+    return [by_line[n].id for n in range(a, b + 1) if n in by_line and by_line[n].id]
+
+
 class EvidencePane(Pane):
-    def __init__(self, proj: Project, entry: Entry, zot: Zotero | None = None):
+    def __init__(self, proj: Project, entry: Entry, zot: Zotero | None = None,
+                 block: list[Entry] | None = None):
         super().__init__(proj, pdf=Path("/nonexistent.pdf"), tmp=proj.dir / "evidence-view")
+        self.block = block or [entry]
+        self.k = next((j for j, e in enumerate(self.block) if e.id == entry.id), 0)
         self.entry = entry
         self.zot = zot or Zotero()
         self.view.follow = False  # nothing to follow: no paper cursor here
         self.i = 0
         self.select(0)
 
+    def claim(self, step: int) -> None:
+        """Next/previous claim of the block; the note pane follows."""
+        if len(self.block) < 2:
+            self.view.status = "only one claim in this block"
+            return
+        self.k = (self.k + step) % len(self.block)
+        self.entry = self.block[self.k]
+        self.select(0)
+        follow_note(self.proj, self.entry.id)
+
+    def _keys(self) -> str:
+        return ("]/[ claim  " if len(self.block) > 1 else "") + "n/p source  o Zotero  q close"
+
     def select(self, i: int) -> None:
         n = len(self.entry.sources)
         v = self.view
         v.rects, v.shown, v.zoom, v.crop = [], (), 1.0, False
+        claim = f"claim {self.k + 1}/{len(self.block)} {self.entry.id}  " if len(self.block) > 1 else ""
         if not n:
-            v.status = f"{self.entry.id}: no sources (q closes)"
+            self.pdf = Path("/nonexistent.pdf")
+            v.status = f"{claim}{self.entry.id}: no sources  {self._keys()}"
             return
         self.i = i % n
         s = self.entry.sources[self.i]
-        head = f"[{self.i + 1}/{n}] {s.bibkey or 'code'}"
+        head = f"{claim}[{self.i + 1}/{n}] {s.bibkey or 'code'}"
         if s.code:
             self.pdf = Path("/nonexistent.pdf")
-            v.status = f"{head}: a code check (see the note)  n/p source  q close"
+            v.status = f"{head}: a code check (see the note)  {self._keys()}"
             return
         try:
             pdf = Path(self.zot.pdf_path(s.att_key)) if s.att_key else None
@@ -81,7 +123,7 @@ class EvidencePane(Pane):
         v.rects = rects
         v.shown = (on[0], on[1]) if len(on) >= 2 and on[1] == on[0] + 1 else ()
         v.page = on[0] if on else (s.page or 1)
-        v.status = f"{head} p.{s.page or v.page}{how}  n/p source  o Zotero  q close"
+        v.status = f"{head} p.{s.page or v.page}{how}  {self._keys()}"
 
     def render(self) -> None:
         if self.pdf.exists():
@@ -98,6 +140,10 @@ class EvidencePane(Pane):
             self.select(self.i + 1)
         elif k in ("p", "N"):
             self.select(self.i - 1)
+        elif k in ("]", "J"):
+            self.claim(1)
+        elif k in ("[", "K"):
+            self.claim(-1)
         elif k == "o":
             s = self.entry.sources[self.i] if self.entry.sources else None
             if s and s.ann_key:
@@ -174,29 +220,54 @@ def show(proj: Project, eid: str, toggle: bool = True) -> str:
         _tmux("kill-window", "-t", open_)
         if toggle and shown == eid:
             return "closed the evidence window"
-    from .launcher import _env_prefix, in_login_shell, redline_cmd
-    rl = _env_prefix() + " ".join(shlex.quote(c) for c in redline_cmd())
     root = str(proj.cfg.root)
-    env = f"REDLINE_ROOT={shlex.quote(root)} "
     left = _tmux("new-window", "-P", "-F", "#{pane_id}", "-t", f"{session}:", "-n", WINDOW, "-c", root,
-                 in_login_shell(f"env {env}{rl} evidence view {shlex.quote(eid)}"))
+                 _pane_cmd(proj, "view", eid))
     wid = _tmux("display", "-p", "-t", left, "#{window_id}")
     _tmux("set-option", "-w", "-t", wid, "@redline_evidence", eid)
-    _tmux("split-window", "-h", "-l", "38%", "-t", left, "-c", root,
-          in_login_shell(f"env {env}{rl} evidence note {shlex.quote(eid)}"))
+    note_pane = _tmux("split-window", "-h", "-l", "38%", "-t", left, "-c", root, "-P", "-F", "#{pane_id}",
+                      _pane_cmd(proj, "note", eid))
+    _tmux("set-option", "-w", "-t", wid, "@redline_note_pane", note_pane)
     _tmux("select-pane", "-t", left)
     return f"evidence {eid}: window opened (q closes it)"
 
 
+def _pane_cmd(proj: Project, what: str, eid: str) -> str:
+    from .launcher import _env_prefix, in_login_shell, redline_cmd
+    rl = _env_prefix() + " ".join(shlex.quote(c) for c in redline_cmd())
+    env = f"REDLINE_ROOT={shlex.quote(str(proj.cfg.root))} "
+    return in_login_shell(f"env {env}{rl} evidence {what} {shlex.quote(eid)}")
+
+
+def follow_note(proj: Project, eid: str) -> None:
+    """Show `eid` in the note pane of this evidence window."""
+    pane = os.environ.get("TMUX_PANE")
+    if not pane:
+        return
+    r = subprocess.run(["tmux", "show-options", "-wqv", "-t", pane, "@redline_note_pane"],
+                       capture_output=True, text=True)
+    note_pane = r.stdout.strip()
+    subprocess.run(["tmux", "set-option", "-w", "-t", pane, "@redline_evidence", eid], capture_output=True)
+    if note_pane:
+        subprocess.run(["tmux", "respawn-pane", "-k", "-t", note_pane, _pane_cmd(proj, "note", eid)],
+                       capture_output=True)
+
+
 def view(proj: Project, eid: str) -> int:
-    entry = Library(proj.dir / "evidence.json").get(eid)
-    return run(EvidencePane(proj, entry))
+    lib = Library(proj.dir / "evidence.json")
+    entry = lib.get(eid)
+    block = [lib.entries[i] for i in block_ids(proj, entry.id) if i in lib.entries] or [entry]
+    return run(EvidencePane(proj, entry, block=block))
 
 
 def note(proj: Project, eid: str) -> int:
     """The entry as text in `less`; leaving it (q) closes the whole window."""
     entry = Library(proj.dir / "evidence.json").get(eid)
-    text = entry.text() + "\n\n(q closes the evidence window; in the PDF pane: n/p sources, o Zotero)\n"
+    block = block_ids(proj, entry.id)
+    where = (f"claim {block.index(entry.id) + 1} of {len(block)} in this block "
+             f"({', '.join(block)}); ]/[ in the PDF pane switch claims\n") if len(block) > 1 else ""
+    text = (where + "\n" if where else "") + entry.text() \
+        + "\n\n(q closes the evidence window; in the PDF pane: n/p sources, o Zotero)\n"
     try:
         if shutil.which("less"):
             subprocess.run(["less", "-R", "-S", "-K", "--prompt=q closes the evidence window"],

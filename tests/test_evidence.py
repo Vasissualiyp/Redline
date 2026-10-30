@@ -199,3 +199,14 @@ def test_migrate_can_leave_unmatched_results_inline(svc):
     t = svc.proj.read()
     assert "% VERIFIED abel02#1\n" in t and '% VERIFIED bromm04: "made-up words" — p.5\n' in t, out
     assert "bromm04#1" not in svc.library().entries and "left inline" in out
+
+
+def test_block_of_stacked_results(svc):
+    from redline.evidence_view import block_ids
+    src = svc.proj.read().replace(
+        "\\citep{abel02}.\n",
+        "\\citep{abel02}.\n% VERIFIED abel02#1\n% VERIFY any: «x»\n% VERIFIED bromm04#2 (+abel02)\n"
+        "\n% VERIFIED other#1\n", 1)
+    svc.proj.main.write_text(src)
+    assert block_ids(svc.proj, "bromm04#2") == ["abel02#1", "bromm04#2"]
+    assert block_ids(svc.proj, "other#1") == ["other#1"]

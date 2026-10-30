@@ -72,7 +72,8 @@ gitsigns' `]c` is restored when you leave.
 | `q` `<Esc>` `i` | leave review mode |
 
 While a buffer is in review mode the statusline shows a **REVIEW** mode: with
-lightline.vim this happens by itself (its mode segment reads REVIEW, in yellow). Other
+lightline.vim this happens by itself (the mode segment reads REVIEW, and it and the
+line:column block turn yellow). Other
 statuslines can use `require("redline.statusline").mode()` (`"REVIEW"` or nil), e.g.
 lualine: `lualine_a = { { "mode", fmt = function(s) return require("redline.statusline").mode() or s end } }`;
 a `User RedlineReview` autocmd fires on every switch.
@@ -175,8 +176,9 @@ The evidence behind the id lives in Zotero and in a local cache
 On a result line (or the claim above it), `E` in review mode (`<leader>jv`,
 `:Redline evidence`) opens a tmux window "evidence": the source page with the quote
 highlighted (two pages stitched if it runs over a page break) and the note beside it.
-In the PDF pane `n`/`p` switch sources and `o` opens the highlight in Zotero; `q` in
-either pane, or `E` again, closes the window.
+In the PDF pane `n`/`p` switch sources, `]`/`[` switch between the claims whose result
+lines are stacked in the same block (the note follows), and `o` opens the highlight in
+Zotero; `q` in either pane, or `E` again, closes the window.
 
 A claim the source contradicts gets `% REFUTED` plus a proposed correction; one it
 can't settle gets `% UNVERIFIED nosrc#n` (the reason is in the library). Results show

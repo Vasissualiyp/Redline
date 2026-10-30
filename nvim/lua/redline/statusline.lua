@@ -73,11 +73,32 @@ function M.paint()
     return
   end
   if M.in_review() then
-    local seg, sep = hl("LightlineLeft_normal_0"), hl("LightlineLeft_normal_0_1")
-    vim.api.nvim_set_hl(0, "LightlineLeft_normal_0", vim.tbl_extend("force", seg,
-      { bg = M.color.gui, ctermbg = M.color.cterm }))
-    vim.api.nvim_set_hl(0, "LightlineLeft_normal_0_1", vim.tbl_extend("force", sep,
-      { fg = M.color.gui, ctermfg = M.color.cterm }))
+    -- every segment drawn in the mode's colour (the mode name, and in most
+    -- themes the line:column block on the right), separators included
+    local mode = hl("LightlineLeft_normal_0")
+    local mbg, mcbg = mode.bg, mode.ctermbg
+    for _, side in ipairs({ "Left", "Right" }) do
+      for i = 0, 6 do
+        for _, name in ipairs({ ("Lightline%s_normal_%d"):format(side, i),
+          ("Lightline%s_normal_%d_%d"):format(side, i, i + 1),
+          ("Lightline%s_normal_%d_%d"):format(side, i - 1, i) }) do
+          local h = hl(name)
+          if next(h) then
+            local new = vim.deepcopy(h)
+            if mbg and h.bg == mbg then
+              new.bg, new.ctermbg = M.color.gui, M.color.cterm
+            end
+            if mbg and h.fg == mbg then
+              new.fg, new.ctermfg = M.color.gui, M.color.cterm
+            end
+            if mcbg and h.ctermbg == mcbg and not (mbg and h.bg ~= mbg) then
+              new.ctermbg = M.color.cterm
+            end
+            vim.api.nvim_set_hl(0, name, new)
+          end
+        end
+      end
+    end
   else
     pcall(vim.fn["lightline#highlight"], "normal")
   end
