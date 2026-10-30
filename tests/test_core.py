@@ -220,7 +220,8 @@ def test_real_paper_counts():
     for macro, kind in (("added", "added"), ("replaced", "replaced"), ("deleted", "deleted")):
         uncommented = len(re.findall(r"(?m)^[^%\n]*?\\" + macro + r"\{", body))
         assert sum(1 for i in doc.items + doc.nested if i.macro == macro) >= uncommented - 2
-    comments = sum(1 for i in doc.items if i.kind == "comment") + sum(1 for i in doc.items if i.comment)
+    comments = sum(1 for i in doc.items if i.kind == "comment" and i.macro == "chcomment") \
+        + sum(1 for i in doc.items if i.comment and i.comment.macro == "chcomment")
     assert comments == len(re.findall(r"\\chcomment\{", body))
     assert not doc.problems
     # accept-all then reject-all only touch markup: the unmarked text survives

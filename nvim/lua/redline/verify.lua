@@ -35,6 +35,55 @@ function M.send(ids)
   tmux.send_agent(res.message)
 end
 
+--- The result under the cursor, or the one directly below the claim line the cursor is on.
+local function result_at(row)
+  local st = core.state()
+  local by_line = {}
+  for _, r in ipairs(st and st.data and st.data.results or {}) do
+    by_line[r.line] = r
+  end
+  if by_line[row] then
+    return by_line[row]
+  end
+  local n, last = row + 1, vim.api.nvim_buf_line_count(0)
+  while n <= last do
+    if by_line[n] then
+      return by_line[n]
+    end
+    local text = vim.api.nvim_buf_get_lines(0, n - 1, n, false)[1] or ""
+    if not text:match("^%s*%%") then
+      return nil -- only verify comment lines sit between a claim and its result
+    end
+    n = n + 1
+  end
+end
+
+--- Open (or close) the evidence window for the result at the cursor.
+function M.evidence()
+  local st = core.state()
+  if not st then
+    return vim.notify("redline: buffer not attached")
+  end
+  local r = result_at(vim.api.nvim_win_get_cursor(0)[1])
+  if not r then
+    return vim.notify("redline: no % VERIFIED/REFUTED/UNVERIFIED line here")
+  end
+  if r.id == vim.NIL or not r.id then
+    return vim.notify("redline: this result carries its evidence inline; `redline evidence migrate` "
+      .. "moves it into the library", vim.log.levels.WARN)
+  end
+  vim.system(rpc.shell("evidence show " .. vim.fn.shellescape(r.id)),
+    { cwd = st.root, text = true, env = { REDLINE_ROOT = st.root } },
+    vim.schedule_wrap(function(res)
+      local msg = vim.trim((res.stdout or "") .. (res.stderr or ""))
+      if res.code ~= 0 then
+        vim.notify("redline: " .. msg, vim.log.levels.WARN)
+      elseif msg ~= "" then
+        vim.notify("redline: " .. msg)
+      end
+    end))
+end
+
 function M.request(visual)
   local st = core.state() or core.attach()
   local first, last, claim

@@ -65,6 +65,7 @@ gitsigns' `]c` is restored when you leave.
 | `W` | pane layout preset (also `<leader>jw`; `<leader>jW` cycles) |
 | `s` (also visual) | verify the claim on this line / the selection, via refcheck or code |
 | `S` | send all open `% VERIFY` requests to the agent |
+| `E` | evidence window for the `% VERIFIED id` line here (toggle) |
 | `c` / `F` | compile (errors go to quickfix) / send the errors to the agent |
 | `O` / `Q` | **sync to Overleaf**: push; merge Overleaf's new edits first (git, or an agent for conflicts) / close the sync output |
 | `P` / `L` | pull+merge+push / pull (3-way merge) |
@@ -146,12 +147,37 @@ The sink accretes at $10^{-3}\,\Msun\,\mathrm{yr^{-1}}$ \citep{abel02}.
 % VERIFY refcheck: «The sink accretes at 1e-3 Msun/yr»
 ```
 
-The agent answers with `record_verification`, which replaces the request with
-`% VERIFIED <bibkey | code:path:line>: <quote or value>`. A claim the source
-contradicts gets `% REFUTED` plus a proposed correction; one it can't settle
-gets `% UNVERIFIED <reason>`. These are the same lines refcheck already writes.
-They show as ✓, ✗ and ? signs, and you can also type requests in Overleaf.
-`redline verify` prints a report.
+The agent answers with `record_verification`, giving the exact sentence(s) and
+page from each source PDF. Redline checks that every quote is really on its page,
+then replaces the request with a short id:
+
+```latex
+% VERIFIED abel02#1
+% VERIFIED yoshida03#2 (+kulkarni21)
+```
+
+The evidence behind the id lives in Zotero and in a local cache
+(`.redline/evidence.json`):
+
+- each quote is highlighted in its PDF (green supports, red contradicts), tagged `rl:<id>`;
+- a note per id, in the collection `Redline evidence/<paper>` (setting
+  `evidence_collection`), holds the claim, verdict, sources, pages and quotes, and
+  links to the highlights. Zotero sync carries it to your other machines, and
+  `redline evidence sync` rebuilds the cache there (or files entries made while
+  Zotero was closed).
+
+On a result line (or the claim above it), `E` in review mode (`<leader>jv`,
+`:Redline evidence`) opens a tmux window "evidence": the source page with the quote
+highlighted (two pages stitched if it runs over a page break) and the note beside it.
+In the PDF pane `n`/`p` switch sources and `o` opens the highlight in Zotero; `q` in
+either pane, or `E` again, closes the window.
+
+A claim the source contradicts gets `% REFUTED` plus a proposed correction; one it
+can't settle gets `% UNVERIFIED nosrc#n` (the reason is in the library). Results show
+as ✓, ✗ and ? signs, and you can also type requests in Overleaf. `redline verify`
+prints a report, `redline evidence list|get ID|sync` work with the library, and
+`redline evidence migrate [--apply]` moves old inline results
+(`% VERIFIED key: "quote" — p.N`) into it; the dry run lists quotes it can't find.
 
 ## Sync to Overleaf
 
@@ -221,6 +247,7 @@ redline sync init|pull|push   # Overleaf via ols, 3-way merged; push = pull+lint
 redline sync overleaf [--agent NAME]   # push if Overleaf unchanged, else merge with an agent
 redline agents                # configured merge agents
 redline verify [requests]     # verification report / the agent task for open requests
+redline evidence list|get ID|show ID|sync|migrate [--apply]   # evidence behind % VERIFIED ids
 redline undo                  # revert the last redline write (keeps later unrelated edits)
 ```
 

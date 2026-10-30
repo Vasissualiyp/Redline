@@ -41,6 +41,12 @@ def redline_cmd() -> list[str]:
     return [exe or "redline"]
 
 
+def _env_prefix() -> str:
+    """Shell prefix that starts redline with the right Python path."""
+    return "env -u PYTHONPATH " + (f"PYTHONPATH={shlex.quote(str(REPO))} "
+                                   if redline_cmd()[0] == sys.executable else "")
+
+
 def _env() -> dict[str, str]:
     env = {"PYTHONPATH": str(REPO) if redline_cmd()[0] == sys.executable else ""}
     return env
@@ -127,8 +133,7 @@ def open_workspace(root: Path | None, attach: bool = True) -> int:
     exists = subprocess.run(["tmux", "has-session", "-t", f"={name}"], capture_output=True).returncode == 0
     if not exists:
         rl = _shell(redline_cmd())
-        env_prefix = "env -u PYTHONPATH " + (f"PYTHONPATH={shlex.quote(str(REPO))} "
-                                             if redline_cmd()[0] == sys.executable else "")
+        env_prefix = _env_prefix()
         sock = _config.socket_path(root, "nvim")
         sock.unlink(missing_ok=True)
         nvim = _shell(["nvim", "--listen", str(sock), "--cmd", f"set rtp^={nvim_dir()}",

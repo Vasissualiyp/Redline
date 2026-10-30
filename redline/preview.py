@@ -94,14 +94,26 @@ def cell_size() -> tuple[int, int]:
     return 10, 20
 
 
+def page_height(pdf: Path, page: int) -> float:
+    """Height of one page in pt (pages of a paper can differ)."""
+    try:
+        out = subprocess.run(["pdfinfo", "-f", str(page), "-l", str(page), str(pdf)],
+                             capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return 792.0
+    m = re.search(rf"^Page\s+{page} size:\s+[\d.]+ x ([\d.]+)", out, re.M) or \
+        re.search(r"^Page size:\s+[\d.]+ x ([\d.]+)", out, re.M)
+    return float(m.group(1)) if m else 792.0
+
+
 class Pane:
-    def __init__(self, proj: Project):
+    def __init__(self, proj: Project, pdf: Path | None = None, tmp: Path | None = None):
         self.proj = proj
-        self.pdf = _compile.pdf_path(proj)
+        self.pdf = pdf or _compile.pdf_path(proj)
         self.tex = proj.main
         self.view = View()
-        self.tmp = proj.dir / "preview"
-        self.tmp.mkdir(exist_ok=True)
+        self.tmp = tmp or proj.dir / "preview"
+        self.tmp.mkdir(parents=True, exist_ok=True)
         self.mtime = 0.0
         self.pages = 1
         self.page_w = 612.0
@@ -387,6 +399,15 @@ def main(proj: Project) -> int:
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     srv.bind(str(sock_path))
     srv.listen(8)
+    try:
+        return run(pane, srv)
+    finally:
+        srv.close()
+        sock_path.unlink(missing_ok=True)
+
+
+def run(pane: Pane, srv: socket.socket | None = None) -> int:
+    """The pane's event loop: keys, socket messages, PDF rebuilds and resizes."""
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd) if os.isatty(fd) else None
     if old:
@@ -401,9 +422,9 @@ def main(proj: Project) -> int:
     resized_at = None
     try:
         while True:
-            r, _, _ = select.select([srv, sys.stdin], [], [], 0.25)
+            r, _, _ = select.select([x for x in (srv, sys.stdin) if x is not None], [], [], 0.25)
             dirty = False
-            if srv in r:
+            if srv is not None and srv in r:
                 conn, _ = srv.accept()
                 conn.settimeout(1)
                 data = b""
@@ -444,6 +465,4 @@ def main(proj: Project) -> int:
         if old:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
         sys.stdout.write("\x1b[?25h\x1b[2J\x1b[H")
-        srv.close()
-        sock_path.unlink(missing_ok=True)
     return 0

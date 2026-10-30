@@ -4,12 +4,15 @@ Each line sits directly after the claim it refers to:
 
     The sink accretes at 1e-3 Msun/yr \\citep{abel02}.
     % VERIFY refcheck: «The sink accretes at 1e-3 Msun/yr»    <- request (human)
-    % VERIFIED abel02: "accretion rates of ~1e-3" — §3, p.5   <- result (agent)
+    % VERIFIED abel02#1                                       <- result (agent)
 
 Requests name a method (refcheck: the cited/added literature; code: the
 analysis repo; any). The agent replaces each request by a result line:
-VERIFIED (source + quote/evidence), REFUTED (the source says otherwise; a
-correction is proposed separately) or UNVERIFIED (nothing found, reason).
+VERIFIED, REFUTED (the source says otherwise; a correction is proposed
+separately) or UNVERIFIED (nothing found). A result names an evidence id
+(`bibkey#n`, `code#n`, `nosrc#n`; other sources as ` (+key2)`); the quotes,
+pages and Zotero highlights behind it live in the evidence library
+(evidence.py). Older results carry the evidence inline and still parse.
 The same lines work when typed in the Overleaf editor.
 """
 from __future__ import annotations
@@ -26,6 +29,8 @@ STATUSES = ("VERIFIED", "REFUTED", "UNVERIFIED")
 _REQ = re.compile(r"^[ \t]*%[ \t]*VERIFY(?![A-Za-z])[ \t]*(refcheck|code|any)?[ \t]*:?[ \t]*(.*)$", re.M)
 _RES = re.compile(r"^[ \t]*%[ \t]*(VERIFIED|REFUTED|UNVERIFIED)(?![A-Za-z])[ \t]*(.*)$", re.M)
 _CLAIM = re.compile(r"«(.*?)»")
+ID_RE = r"[A-Za-z0-9_:.\-]+#\d+"
+_SHORT = re.compile(rf"^({ID_RE})(?:[ \t]+\(\+([^)]*)\))?[ \t]*$")
 
 
 @dataclass
@@ -48,6 +53,13 @@ class Result:
     status: str
     text: str
     line: int
+    start: int = 0
+    end: int = 0                  # offsets of the comment line, newline included
+    id: str | None = None         # evidence id; None for an old inline result
+    also: tuple[str, ...] = ()    # further sources named on the line
+
+    def as_dict(self) -> dict:
+        return {"status": self.status, "text": self.text, "line": self.line, "id": self.id}
 
 
 def _claim_line_before(src: str, line_starts: list[int], line_no: int) -> int:
@@ -91,8 +103,17 @@ def requests(doc: Document) -> list[Request]:
 
 
 def results(doc: Document) -> list[Result]:
-    return [Result(m.group(1), m.group(2).strip(), doc.line_of(m.start()))
-            for m in _RES.finditer(doc.src, doc.body_start, doc.body_end)]
+    out = []
+    for m in _RES.finditer(doc.src, doc.body_start, doc.body_end):
+        text = m.group(2).strip()
+        end = doc.src.find("\n", m.end())
+        end = len(doc.src) if end < 0 else end + 1
+        short = _SHORT.match(text)
+        also = tuple(k.strip() for k in re.split(r"[,+]", short.group(2)) if k.strip()) \
+            if short and short.group(2) else ()
+        out.append(Result(m.group(1), text, doc.line_of(m.start()), m.start(), end,
+                          short.group(1) if short else None, also))
+    return out
 
 
 def _one_line(s: str) -> str:
@@ -138,10 +159,25 @@ def result_line(status: str, source: str, evidence: str) -> str:
     return f"% {status} {body}".rstrip()
 
 
+def short_line(status: str, eid: str, also: list[str] | tuple[str, ...] = ()) -> str:
+    status = status.upper()
+    if status not in STATUSES:
+        raise RedlineError(f"status must be one of {STATUSES}")
+    if not re.fullmatch(ID_RE, eid):
+        raise RedlineError(f"bad evidence id {eid!r}")
+    return f"% {status} {eid}" + (f" (+{', '.join(also)})" if also else "")
+
+
 def record(doc: Document, status: str, source: str, evidence: str, request_id: str | None = None,
            after_line: int | None = None) -> list[TextEdit]:
-    """Replace a request by its result, or add a result after a claim line."""
-    line = result_line(status, source, evidence) + "\n"
+    """Replace a request by an inline result, or add one after a claim line."""
+    return place(doc, result_line(status, source, evidence), request_id, after_line)
+
+
+def place(doc: Document, line: str, request_id: str | None = None,
+          after_line: int | None = None) -> list[TextEdit]:
+    """Put a result line in place of a request, or after a claim line."""
+    line = line.rstrip("\n") + "\n"
     if request_id:
         hits = [r for r in requests(doc) if r.id == request_id or r.id.startswith(request_id)]
         if not hits:
@@ -169,4 +205,8 @@ def report(doc: Document) -> str:
     for r in res:
         if r.status != "VERIFIED":
             lines.append(f"  l.{r.line} {r.status}: {r.text}")
+    old = sum(1 for r in res if r.id is None)
+    if old:
+        lines.append(f"  {old} result(s) still carry their evidence inline "
+                     "(`redline evidence migrate` moves it into the library)")
     return "\n".join(lines)

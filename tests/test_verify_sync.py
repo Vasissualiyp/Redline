@@ -51,9 +51,11 @@ def test_service_record_by_anchor(tmp_path, monkeypatch):
     monkeypatch.setenv("REDLINE_ROOT", str(tmp_path))
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
     s = Service(Project.open())
-    s.record_verification("REFUTED", "code:analysis/sinks.py:40", "rate is 2e-4, not high", anchor="at a high rate.")
-    assert "at a high rate.\n% REFUTED code:analysis/sinks.py:40: rate is 2e-4, not high\n" in s.proj.read()
+    out = s.record_verification("REFUTED", code={"path": "analysis/sinks.py", "line": 40,
+                                                 "value": "rate is 2e-4, not high"}, anchor="at a high rate.")
+    assert "at a high rate.\n% REFUTED code#1\n" in s.proj.read(), out
     assert "1 refuted" in s.verification_report()
+    assert "rate is 2e-4" in s.evidence("code#1")
 
 
 # ---- sync to Overleaf --------------------------------------------------------------

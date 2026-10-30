@@ -92,6 +92,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--json", action="store_true")
     p = sub.add_parser("verify", help="claim verification: list requests / report / agent message")
     p.add_argument("what", choices=["requests", "report"], nargs="?", default="report")
+    p = sub.add_parser("evidence", help="evidence behind %% VERIFIED lines (Zotero-backed library)")
+    p.add_argument("what", choices=["list", "get", "show", "view", "note", "sync", "migrate"],
+                   help="list | get ID (text) | show ID (tmux window, toggles) | sync (with Zotero) | "
+                        "migrate (inline results into the library; dry run without --apply)")
+    p.add_argument("id", nargs="?")
+    p.add_argument("--apply", action="store_true", help="migrate: change the paper (default: dry run)")
+    p.add_argument("--retry", action="store_true", help="sync: retry quotes that were not found")
     sub.add_parser("undo", help="revert the last redline write")
     sub.add_parser("history", help="recent redline writes")
 
@@ -210,6 +217,15 @@ def _run(a: argparse.Namespace) -> int:
     if a.cmd == "preview":
         from .preview import main as preview_main
         return preview_main(proj)
+    if a.cmd == "evidence" and a.what in ("show", "view", "note"):
+        if not a.id:
+            print(f"redline evidence {a.what}: give the evidence id (e.g. ho25b#1)", file=sys.stderr)
+            return 2
+        from . import evidence_view
+        if a.what == "show":
+            print(evidence_view.show(proj, a.id))
+            return 0
+        return (evidence_view.view if a.what == "view" else evidence_view.note)(proj, a.id)
     if a.cmd == "mcp-config":
         from .launcher import mcp_config, write_mcp_config
         if a.print:
@@ -252,6 +268,15 @@ def _run(a: argparse.Namespace) -> int:
             for n in names))
     elif a.cmd == "verify":
         print(s.verification_requests() if a.what == "requests" else s.verification_report())
+    elif a.cmd == "evidence":
+        if a.what == "list":
+            print(s.evidence_list())
+        elif a.what == "get":
+            print(s.evidence(a.id or ""))
+        elif a.what == "sync":
+            print(s.evidence_sync(a.retry))
+        elif a.what == "migrate":
+            print(s.migrate_verifications(a.apply, progress=lambda m: print(m, file=sys.stderr, flush=True)))
     elif a.cmd == "undo":
         print(s.undo())
     elif a.cmd == "history":

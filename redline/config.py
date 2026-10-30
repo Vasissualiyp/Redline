@@ -32,6 +32,8 @@ ols = "ols"
 overleaf_project = ""
 # Comments matching this regex survive bulk accepts.
 keep_comment_regex = "TODO"
+# Zotero collection for the evidence notes behind % VERIFIED lines ({paper} = this folder's name)
+evidence_collection = "Redline evidence/{paper}"
 # Shell command run before pushing (e.g. rsync fresh plots into light/).
 pre_push = ""
 compile_timeout = 600
@@ -87,6 +89,7 @@ class Config:
     ols: str = "ols"
     overleaf_project: str = ""
     keep_comment_regex: str = "TODO"
+    evidence_collection: str = "Redline evidence/{paper}"
     pre_push: str = ""
     compile_timeout: int = 600
     merge_timeout: int = 1800
@@ -161,7 +164,7 @@ def load(root: Path | None = None) -> Config:
     legacy.update(data.get("legacy", {}))
     cfg = Config(root=root, main=main)
     for k in ("code_dir", "agent", "agent_kind", "layout", "tmux_quit_key", "ols", "overleaf_project",
-              "keep_comment_regex", "pre_push"):
+              "keep_comment_regex", "pre_push", "evidence_collection"):
         if k in data:
             setattr(cfg, k, str(data[k]))
     if "compile_timeout" in data:

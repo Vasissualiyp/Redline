@@ -443,6 +443,7 @@ local REVIEW_KEYS = {
   { "n", "s", function() require("redline.verify").request(false) end, "verify the claim on this line (code/refcheck)" },
   { "x", "s", function() require("redline.verify").request(true) end, "verify the selected claim (code/refcheck)" },
   { "n", "S", function() require("redline.verify").send_all() end, "send all open % VERIFY requests to the agent" },
+  { "n", "E", function() require("redline.verify").evidence() end, "evidence window for the % VERIFIED line here (toggle)" },
   { "n", "O", function() require("redline.sync").sync() end, "sync to Overleaf (push; merge first if Overleaf has edits)" },
   { "n", "Q", function() require("redline.sync").close() end, "close the sync output split" },
   { "n", "P", M.push, "push to Overleaf (pull+merge, then push)" },
@@ -569,6 +570,7 @@ function M.buffer_maps(buf)
   map("n", p .. "s", function() require("redline.verify").request(false) end, "verify claim on this line")
   map("x", p .. "s", function() require("redline.verify").request(true) end, "verify selected claim")
   map("n", p .. "S", function() require("redline.verify").send_all() end, "send open verify requests")
+  map("n", p .. "v", function() require("redline.verify").evidence() end, "evidence window (toggle)")
   map("n", p .. "o", function() require("redline.sync").sync() end, "sync to Overleaf")
   map("n", p .. "q", function() require("redline.sync").close() end, "close the sync output split")
   map("n", p .. "Q", function() require("redline.quit").quit() end, "close the whole redline session (asks)")

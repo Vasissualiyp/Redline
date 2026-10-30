@@ -38,7 +38,10 @@ reject every suggestion from their editor. Rules:
   propose_move. plain_edit is only for equations/environments and tiny typo fixes;
   it refuses prose changes.
 - `% VERIFY <refcheck|code|any>: «claim»` lines are verification requests from the
-  human: verification_requests() lists them; answer each with record_verification().
+  human: verification_requests() lists them; answer each with record_verification()
+  (structured sources: exact quote + page per bibkey). Results in the paper are short
+  ids (% VERIFIED ho25b#1); evidence(id) shows what is behind one. Never write or edit
+  % VERIFIED/REFUTED/UNVERIFIED lines by hand.
 """
 
 mcp = MCPServer(name="redline", instructions=INSTRUCTIONS)
@@ -268,15 +271,45 @@ def verification_requests() -> str:
 
 
 @mcp.tool()
-def record_verification(status: str, source: str = "", evidence: str = "",
+def record_verification(status: str, sources: list[dict[str, Any]] | None = None,
+                        code: dict[str, Any] | None = None, reason: str = "",
                         request_id: str | None = None, anchor: str | None = None,
                         section: str | None = None) -> str:
-    """Write the outcome of checking a claim as a `% VERIFIED|REFUTED|UNVERIFIED`
-    line after it (replacing the request when request_id is given; otherwise after
-    the line where `anchor` text ends). source: bib key or code:<path>:<line>;
-    evidence: exact quote with §/page, or the computed value. UNVERIFIED needs only
-    evidence (the reason)."""
-    return _safe(svc().record_verification, status, source, evidence, request_id, anchor, section)
+    """Record the outcome of checking a claim. Redline writes the short line
+    `% VERIFIED|REFUTED|UNVERIFIED <bibkey>#<n>` after the claim (in place of the
+    request when request_id is given, else after the line where `anchor` ends), puts
+    the evidence in the library, highlights each quote in its Zotero PDF and files a
+    note in Zotero.
+    sources: [{bibkey, page, quote, section?, role?}]: quote = exact sentence(s) copied
+    from the PDF, page = 1-based PDF page, section = "§3.1"/"Abstract"/"Table 2",
+    role = supports (default) | contradicts | context. Quotes are matched on the page
+    first; a quote that is not found is refused (with the closest page text) and
+    nothing is written, so fix it and call again.
+    code: {path, line, value} for checks against the analysis code.
+    reason: why, for UNVERIFIED (what was looked at); optional otherwise."""
+    return _safe(svc().record_verification, status, sources, code, reason, request_id, anchor, section)
+
+
+@mcp.tool()
+def evidence(id: str) -> str:
+    """The evidence behind a result line (e.g. ho25b#1): claim, verdict, sources,
+    pages, quotes and the Zotero state."""
+    return _safe(svc().evidence, id)
+
+
+@mcp.tool()
+def evidence_sync(retry: bool = False) -> str:
+    """Push evidence Zotero does not have yet (made while it was down), and pull
+    entries made on other machines. retry=true also retries quotes that were not found."""
+    return _safe(svc().evidence_sync, retry)
+
+
+@mcp.tool()
+def migrate_verifications(apply: bool = False) -> str:
+    """Move old inline `% VERIFIED key: "quote" — p.N` results into the evidence library
+    (short ids in the paper, Zotero highlights and notes). Without apply: a dry run that
+    reports which quotes are found in their PDFs."""
+    return _safe(svc().migrate_verifications, apply)
 
 
 @mcp.tool()

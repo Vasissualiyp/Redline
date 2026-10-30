@@ -78,7 +78,7 @@ class Rpc:
                                for m in doc.markers if m.item is None],
             "lint": [i.as_dict() for i in lint.lint(doc)],
             "verify": [r.as_dict() for r in verify.requests(doc)],
-            "results": [{"status": r.status, "text": r.text, "line": r.line} for r in verify.results(doc)],
+            "results": [r.as_dict() for r in verify.results(doc)],
         }
 
     def add_verify(self, p: dict) -> dict:
