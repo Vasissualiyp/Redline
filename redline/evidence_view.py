@@ -221,14 +221,15 @@ def show(proj: Project, eid: str, toggle: bool = True) -> str:
         if toggle and shown == eid:
             return "closed the evidence window"
     root = str(proj.cfg.root)
-    left = _tmux("new-window", "-P", "-F", "#{pane_id}", "-t", f"{session}:", "-n", WINDOW, "-c", root,
-                 _pane_cmd(proj, "view", eid))
-    wid = _tmux("display", "-p", "-t", left, "#{window_id}")
-    _tmux("set-option", "-w", "-t", wid, "@redline_evidence", eid)
-    note_pane = _tmux("split-window", "-h", "-l", "38%", "-t", left, "-c", root, "-P", "-F", "#{pane_id}",
+    # the note pane first, then the PDF pane split off to its left at its final
+    # size: the page is drawn once, not again after a resize
+    note_pane = _tmux("new-window", "-P", "-F", "#{pane_id}", "-t", f"{session}:", "-n", WINDOW, "-c", root,
                       _pane_cmd(proj, "note", eid))
+    wid = _tmux("display", "-p", "-t", note_pane, "#{window_id}")
+    _tmux("set-option", "-w", "-t", wid, "@redline_evidence", eid)
     _tmux("set-option", "-w", "-t", wid, "@redline_note_pane", note_pane)
-    _tmux("select-pane", "-t", left)
+    _tmux("split-window", "-h", "-b", "-l", "62%", "-t", note_pane, "-c", root,
+          _pane_cmd(proj, "view", eid))
     return f"evidence {eid}: window opened (q closes it)"
 
 
@@ -257,20 +258,83 @@ def view(proj: Project, eid: str) -> int:
     lib = Library(proj.dir / "evidence.json")
     entry = lib.get(eid)
     block = [lib.entries[i] for i in block_ids(proj, entry.id) if i in lib.entries] or [entry]
-    return run(EvidencePane(proj, entry, block=block))
+    return run(EvidencePane(proj, entry, block=block), settle=())
+
+
+# ---- the note pane ---------------------------------------------------------------------
+B, I, D, R = "\x1b[1m", "\x1b[3m", "\x1b[2m", "\x1b[0m"
+FG = {"green": "\x1b[32m", "red": "\x1b[31m", "yellow": "\x1b[33m", "blue": "\x1b[34m",
+      "magenta": "\x1b[35m", "cyan": "\x1b[36m"}
+STATUS_COLOR = {"VERIFIED": "green", "REFUTED": "red", "UNVERIFIED": "yellow"}
+ROLE_COLOR = {"supports": "green", "contradicts": "red", "context": "blue"}
+
+
+def _wrap(text: str, width: int, first: str = "", rest: str | None = None, style: str = "") -> list[str]:
+    """Word-wrapped lines; `first`/`rest` are plain prefixes (their width counts)."""
+    import textwrap
+    rest = first if rest is None else rest
+    lines = textwrap.wrap(" ".join(text.split()), width=max(20, width), initial_indent="\0" * len(first),
+                          subsequent_indent="\0" * len(rest), break_long_words=True) or [""]
+    out = []
+    for i, ln in enumerate(lines):
+        pre = first if i == 0 else rest
+        out.append(pre + style + ln.lstrip("\0") + (R if style else ""))
+    return out
+
+
+def rich_text(e: Entry, width: int, block: list[str] | None = None) -> str:
+    """The entry for a terminal: colours, bold and italics, wrapped to `width`."""
+    w = max(30, width - 1)
+    col = FG[STATUS_COLOR.get(e.status, "yellow")]
+    out = [f"{B}{col}{e.status}{R}  {B}{e.id}{R}"]
+    if block and len(block) > 1:
+        k = block.index(e.id) + 1 if e.id in block else 1
+        out.append(f"{D}claim {k} of {len(block)} in this block: ]/[ in the PDF pane{R}")
+    out.append("")
+    if e.claim:
+        out.append(f"{B}{FG['cyan']}Claim{R}" + (f"  {D}§{e.section}{R}" if e.section else ""))
+        out += _wrap(e.claim, w, "  ", style=I)
+        out.append("")
+    if e.reason:
+        out.append(f"{B}{FG['cyan']}Remark{R}")
+        out += _wrap(e.reason, w, "  ")
+        out.append("")
+    for i, s in enumerate(e.sources, 1):
+        if s.code:
+            out.append(f"{B}[{i}] code{R} {FG['magenta']}{s.code.get('path', '')}:{s.code.get('line', '')}{R}")
+            if s.code.get("value"):
+                out += _wrap(str(s.code["value"]), w, "    ")
+            out.append("")
+            continue
+        where = ", ".join(x for x in (s.section, f"p.{s.page}" if s.page else "") if x)
+        role = FG[ROLE_COLOR.get(s.role, "yellow")]
+        out.append(f"{B}[{i}] {FG['magenta']}{s.bibkey}{R}  {role}{s.role}{R}" + (f"  {D}{where}{R}" if where else ""))
+        if s.quote:
+            bar = f"  {role}│{R} "
+            for ln in _wrap(s.quote, w - 4, "", style=I):
+                out.append(bar + ln)
+        if s.highlight and s.highlight != "ok":
+            out += _wrap(f"no Zotero highlight: {s.highlight.removeprefix('none: ')}", w, "    ",
+                         style=FG["yellow"])
+        out.append("")
+    out.append(f"{D}Zotero: {e.zotero}{R}")
+    out.append(f"{D}q closes · PDF pane: n/p source"
+               + (", ]/[ claim" if block and len(block) > 1 else "") + f", o open in Zotero{R}")
+    return "\n".join(out) + "\n"
 
 
 def note(proj: Project, eid: str) -> int:
-    """The entry as text in `less`; leaving it (q) closes the whole window."""
+    """The entry, formatted, in `less`; leaving it (q) closes the whole window."""
     entry = Library(proj.dir / "evidence.json").get(eid)
     block = block_ids(proj, entry.id)
-    where = (f"claim {block.index(entry.id) + 1} of {len(block)} in this block "
-             f"({', '.join(block)}); ]/[ in the PDF pane switch claims\n") if len(block) > 1 else ""
-    text = (where + "\n" if where else "") + entry.text() \
-        + "\n\n(q closes the evidence window; in the PDF pane: n/p sources, o Zotero)\n"
+    try:
+        width = os.get_terminal_size(sys.stdout.fileno()).columns
+    except OSError:
+        width = 80
+    text = rich_text(entry, width, block)
     try:
         if shutil.which("less"):
-            subprocess.run(["less", "-R", "-S", "-K", "--prompt=q closes the evidence window"],
+            subprocess.run(["less", "-R", "-K", "--prompt=q closes the evidence window"],
                            input=text.encode(), check=False)
         else:
             sys.stdout.write(text)

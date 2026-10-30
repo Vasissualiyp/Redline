@@ -406,8 +406,11 @@ def main(proj: Project) -> int:
         sock_path.unlink(missing_ok=True)
 
 
-def run(pane: Pane, srv: socket.socket | None = None) -> int:
-    """The pane's event loop: keys, socket messages, PDF rebuilds and resizes."""
+def run(pane: Pane, srv: socket.socket | None = None, settle: tuple[float, ...] = (1.5, 4.0)) -> int:
+    """The pane's event loop: keys, socket messages, PDF rebuilds and resizes.
+
+    settle: extra redraws (seconds after start) for panes that are still being
+    arranged when they start (the paper preview under a layout preset)."""
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd) if os.isatty(fd) else None
     if old:
@@ -418,7 +421,7 @@ def run(pane: Pane, srv: socket.socket | None = None) -> int:
     # The pane is still settling when we start (layout preset, client attach),
     # so draw again shortly after; later resizes redraw once the size is stable.
     t0 = time.monotonic()
-    pending = [t0 + 1.5, t0 + 4.0]
+    pending = [t0 + d for d in settle]
     resized_at = None
     try:
         while True:

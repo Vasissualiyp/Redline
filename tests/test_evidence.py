@@ -210,3 +210,14 @@ def test_block_of_stacked_results(svc):
     svc.proj.main.write_text(src)
     assert block_ids(svc.proj, "bromm04#2") == ["abel02#1", "bromm04#2"]
     assert block_ids(svc.proj, "other#1") == ["other#1"]
+
+
+def test_note_is_wrapped_to_the_pane():
+    import re
+    from redline.evidence_view import rich_text
+    e = evidence.Entry("abel02#1", "VERIFIED", claim="word " * 60, sources=[
+        evidence.Source(bibkey="abel02", page=2, quote="quote words " * 30, section="§1", highlight="ok")])
+    text = rich_text(e, 50, ["abel02#1"])
+    visible = [re.sub(r"\x1b\[[0-9;]*m", "", ln) for ln in text.splitlines()]
+    assert max(len(ln) for ln in visible) <= 50
+    assert "VERIFIED  abel02#1" in visible[0] and any(ln.startswith("  │ quote") for ln in visible)
