@@ -116,7 +116,7 @@ function M.draw(buf, data, opts)
       end
     end
     if opts.labels then
-      local label = it.label .. (it.origin ~= "manual" and (" " .. it.origin) or "")
+      local label = it.label .. ((opts.label_origin and it.origin ~= "manual") and (" " .. it.origin) or "")
       if it.marker and it.marker.note and it.marker.note ~= "" then
         label = label .. "  %" .. it.marker.kind .. " " .. it.marker.note
       end

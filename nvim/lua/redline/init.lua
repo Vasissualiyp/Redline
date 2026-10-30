@@ -10,7 +10,8 @@ M.config = {
   autosave = true, -- keep the file on disk in sync so agents see your edits
   autosave_delay = 800,
   follow = true, -- move the PDF pane with the cursor in review mode
-  labels = true, -- show C12/origin at the end of changed lines in review mode
+  labels = true, -- show C12 (and %N notes) at the end of changed lines in review mode
+  label_origin = false, -- also show who made the change (claude-code, opencode, ...)
 }
 
 -- per-buffer state: { root, data, tick, review, saved_text, watcher }
@@ -57,7 +58,8 @@ function M.refresh(buf, cb)
       return -- stale; a newer refresh is on its way
     end
     st.data = res
-    render.draw(buf, res, { conceal = st.review, labels = st.review and M.config.labels })
+    render.draw(buf, res, { conceal = st.review, labels = st.review and M.config.labels,
+      label_origin = M.config.label_origin })
     if cb then
       cb(res)
     end
