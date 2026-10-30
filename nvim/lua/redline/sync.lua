@@ -18,6 +18,10 @@ local function paper_win()
   return st and vim.api.nvim_get_current_win()
 end
 
+function M.is_open()
+  return out.win ~= nil and vim.api.nvim_win_is_valid(out.win)
+end
+
 --- Close the sync output split and go back to the paper.
 function M.close()
   if out.win and vim.api.nvim_win_is_valid(out.win) then

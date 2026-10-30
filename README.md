@@ -67,7 +67,8 @@ gitsigns' `]c` is restored when you leave.
 | `S` | send all open `% VERIFY` requests to the agent |
 | `E` | evidence window for the `% VERIFIED id` line here (toggle) |
 | `c` / `F` | compile (errors go to quickfix) / send the errors to the agent |
-| `O` / `Q` | **sync to Overleaf**: push; merge Overleaf's new edits first (git, or an agent for conflicts) / close the sync output |
+| `O` | **sync to Overleaf**: push; merge Overleaf's new edits first (git, or an agent for conflicts) |
+| `Q` | close the sync output if it is open, otherwise close the whole redline session (asks first) |
 | `P` / `L` | pull+merge+push / pull (3-way merge) |
 | `q` `<Esc>` `i` | leave review mode |
 

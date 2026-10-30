@@ -445,7 +445,14 @@ local REVIEW_KEYS = {
   { "n", "S", function() require("redline.verify").send_all() end, "send all open % VERIFY requests to the agent" },
   { "n", "E", function() require("redline.verify").evidence() end, "evidence window for the % VERIFIED line here (toggle)" },
   { "n", "O", function() require("redline.sync").sync() end, "sync to Overleaf (push; merge first if Overleaf has edits)" },
-  { "n", "Q", function() require("redline.sync").close() end, "close the sync output split" },
+  { "n", "Q", function()
+    local sync = require("redline.sync")
+    if sync.is_open() then
+      sync.close()
+    else
+      require("redline.quit").quit()
+    end
+  end, "close the sync output split, else the whole redline session (asks)" },
   { "n", "P", M.push, "push to Overleaf (pull+merge, then push)" },
   { "n", "L", M.pull, "pull from Overleaf" },
   { "n", "W", function() require("redline.layout").pick() end, "pane layout preset" },
