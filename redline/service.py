@@ -561,8 +561,11 @@ class Service:
         lib.save()
         return f"evidence: pushed {pushed} entr{'y' if pushed == 1 else 'ies'} to Zotero, pulled {pulled}"
 
-    def migrate_verifications(self, apply: bool = False, progress=None) -> str:
-        """Move inline `% VERIFIED key: "quote" — p.N` results into the evidence library."""
+    def migrate_verifications(self, apply: bool = False, progress=None, skip_unmatched: bool = False) -> str:
+        """Move inline `% VERIFIED key: "quote" — p.N` results into the evidence library.
+
+        skip_unmatched: leave results with a quote that was not found in its PDF
+        (or a source not in Zotero) inline, untouched."""
         say = progress or (lambda msg: None)
         doc = self.proj.doc()
         olds = [r for r in _verify.results(doc) if not r.id]
@@ -599,6 +602,11 @@ class Service:
                 report.append(f"  l.{r.line}: no source/quote recognised: {_short(r.text, 100)}")
         if not apply:
             return "\n".join(report + ["dry run: nothing changed (apply=True / --apply migrates)"])
+        if skip_unmatched and online:
+            kept = [(r, e) for r, e in plan if any(s.highlight.startswith("none") for s in e.sources)]
+            plan = [(r, e) for r, e in plan if (r, e) not in kept]
+            report.append(f"left inline (a quote not found): {len(kept)} result(s), lines "
+                          + ", ".join(str(r.line) for r, _ in kept))
         lib = self.library()
         used = {r.id for r in _verify.results(doc) if r.id}
         for _, e in plan:

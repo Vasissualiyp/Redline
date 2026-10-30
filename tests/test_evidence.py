@@ -187,3 +187,15 @@ def test_bib_fields_and_plain_titles():
                     '@ARTICLE{shang10,\n    title = "{keeping gas H$_2$ free, T$_{vir}$ > 10$^4$ K}",\n}\n')
     assert bib["oh02"]["doi"] == "10.1086/339393" and bib["oh02"]["eprint"] == "astro-ph/0108071"
     assert plain(bib["shang10"]["title"]) == "keeping gas H2 free, Tvir > 104 K"
+
+
+def test_migrate_can_leave_unmatched_results_inline(svc):
+    src = svc.proj.read().replace(
+        "\\citep{abel02}.\n",
+        "\\citep{abel02}.\n% VERIFIED abel02: \"first stars form in minihaloes\" — §1, p.2\n", 1)
+    src = src.replace("at a high rate.\n", "at a high rate.\n% VERIFIED bromm04: \"made-up words\" — p.5\n", 1)
+    svc.proj.main.write_text(src)
+    out = svc.migrate_verifications(apply=True, skip_unmatched=True)
+    t = svc.proj.read()
+    assert "% VERIFIED abel02#1\n" in t and '% VERIFIED bromm04: "made-up words" — p.5\n' in t, out
+    assert "bromm04#1" not in svc.library().entries and "left inline" in out

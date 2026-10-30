@@ -305,11 +305,11 @@ def evidence_sync(retry: bool = False) -> str:
 
 
 @mcp.tool()
-def migrate_verifications(apply: bool = False) -> str:
+def migrate_verifications(apply: bool = False, skip_unmatched: bool = False) -> str:
     """Move old inline `% VERIFIED key: "quote" — p.N` results into the evidence library
     (short ids in the paper, Zotero highlights and notes). Without apply: a dry run that
     reports which quotes are found in their PDFs."""
-    return _safe(svc().migrate_verifications, apply)
+    return _safe(svc().migrate_verifications, apply, None, skip_unmatched)
 
 
 @mcp.tool()

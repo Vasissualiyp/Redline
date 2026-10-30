@@ -99,6 +99,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("id", nargs="?")
     p.add_argument("--apply", action="store_true", help="migrate: change the paper (default: dry run)")
     p.add_argument("--retry", action="store_true", help="sync: retry quotes that were not found")
+    p.add_argument("--skip-unmatched", action="store_true",
+                   help="migrate: leave results whose quotes are not all found inline")
     sub.add_parser("undo", help="revert the last redline write")
     sub.add_parser("history", help="recent redline writes")
 
@@ -276,7 +278,8 @@ def _run(a: argparse.Namespace) -> int:
         elif a.what == "sync":
             print(s.evidence_sync(a.retry))
         elif a.what == "migrate":
-            print(s.migrate_verifications(a.apply, progress=lambda m: print(m, file=sys.stderr, flush=True)))
+            print(s.migrate_verifications(a.apply, progress=lambda m: print(m, file=sys.stderr, flush=True),
+                                          skip_unmatched=a.skip_unmatched))
     elif a.cmd == "undo":
         print(s.undo())
     elif a.cmd == "history":
