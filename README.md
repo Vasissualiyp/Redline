@@ -71,6 +71,12 @@ gitsigns' `]c` is restored when you leave.
 | `P` / `L` | pull+merge+push / pull (3-way merge) |
 | `q` `<Esc>` `i` | leave review mode |
 
+While a buffer is in review mode the statusline shows a **REVIEW** mode: with
+lightline.vim this happens by itself (its mode segment reads REVIEW, in yellow). Other
+statuslines can use `require("redline.statusline").mode()` (`"REVIEW"` or nil), e.g.
+lualine: `lualine_a = { { "mode", fmt = function(s) return require("redline.statusline").mode() or s end } }`;
+a `User RedlineReview` autocmd fires on every switch.
+
 Outside review mode:
 - `]r` / `[r` jump between changes.
 - `<leader>ja{motion}` and `<leader>jx{motion}` accept or reject a range, e.g.

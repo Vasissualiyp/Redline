@@ -505,6 +505,7 @@ function M.enter()
     end,
   })
   core.refresh(buf)
+  require("redline.statusline").update()
   vim.notify("redline: review mode (? for keys, q to leave)")
 end
 
@@ -529,6 +530,7 @@ function M.exit()
     pcall(vim.api.nvim_del_autocmd, st.follow_au)
   end
   core.refresh(buf)
+  require("redline.statusline").update()
 end
 
 function M.toggle()
