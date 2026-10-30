@@ -27,6 +27,8 @@ agent_kind = "claude"
 layout = "auto"
 # tmux key (after the prefix) that asks to close the whole session; "" = none.
 tmux_quit_key = "Q"
+# tmux key (after the prefix) for the agent menu (claude / opencode models); "" = none.
+tmux_model_key = "A"
 # Overleaf sync (overleaf-sync's `ols`); project defaults to the directory name.
 ols = "ols"
 overleaf_project = ""
@@ -58,6 +60,22 @@ zotero = ["zotero-mcp"]
 """
 
 GLOBAL_CONFIG = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "redline" / "config.toml"
+
+# Agents the agent-pane menu offers (review mode `m`, tmux prefix + tmux_model_key).
+# cmd: what runs in the pane; model: opencode's provider/model#variant, written to
+# the paper's opencode.json; opencode: extra opencode config merged in there.
+DEFAULT_MODELS: dict[str, dict] = {
+    "claude": {"label": "Claude Code", "cmd": "claude"},
+    "deepseek": {"label": "opencode: DeepSeek Flash, high effort", "cmd": "opencode --standalone",
+                 "model": "deepseek/deepseek-flash#high",
+                 # opencode 2.x reads `api` as the endpoint, so the global "api": "openai"
+                 # fails with Invalid URL; the endpoint alone keeps the catalog's npm package
+                 "opencode": {"provider": {"deepseek": {"api": "https://api.deepseek.com"}}}},
+    "gpt": {"label": "opencode: GPT-6 Sol, high effort", "cmd": "opencode --standalone",
+            "model": "openai/gpt-6-sol#high"},
+    "qwen-local": {"label": "opencode: Qwen 3.8 27B on vas-desktop (local)", "cmd": "opencode --standalone",
+                   "model": "ollama/qwen3.8"},
+}
 
 DEFAULT_AGENTS: dict[str, dict] = {
     # interactive Claude Code in a tmux window: you can watch and steer it
@@ -94,6 +112,8 @@ class Config:
     compile_timeout: int = 600
     merge_timeout: int = 1800
     agents: dict[str, dict] = field(default_factory=lambda: dict(DEFAULT_AGENTS))
+    models: dict[str, dict] = field(default_factory=lambda: dict(DEFAULT_MODELS))
+    tmux_model_key: str = "A"
     mcp_extra: dict[str, list[str]] = field(default_factory=lambda: {"zotero": ["zotero-mcp"]})
     legacy: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_LEGACY))
 
@@ -158,13 +178,16 @@ def load(root: Path | None = None) -> Config:
     agents = dict(DEFAULT_AGENTS)
     agents.update({k: agent_spec(v) for k, v in glob.get("agents", {}).items()})
     agents.update({k: agent_spec(v) for k, v in data.get("agents", {}).items()})
-    data = {**{k: v for k, v in glob.items() if k != "agents"}, **data}
+    models = dict(DEFAULT_MODELS)
+    models.update(glob.get("models", {}))
+    models.update(data.get("models", {}))
+    data = {**{k: v for k, v in glob.items() if k not in ("agents", "models")}, **data}
     main = data.get("main") or detect_main(root)
     legacy = dict(DEFAULT_LEGACY)
     legacy.update(data.get("legacy", {}))
     cfg = Config(root=root, main=main)
     for k in ("code_dir", "agent", "agent_kind", "layout", "tmux_quit_key", "ols", "overleaf_project",
-              "keep_comment_regex", "pre_push", "evidence_collection"):
+              "keep_comment_regex", "pre_push", "evidence_collection", "tmux_model_key"):
         if k in data:
             setattr(cfg, k, str(data[k]))
     if "compile_timeout" in data:
@@ -172,6 +195,7 @@ def load(root: Path | None = None) -> Config:
     if "merge_timeout" in data:
         cfg.merge_timeout = int(data["merge_timeout"])
     cfg.agents = {k: v for k, v in agents.items() if v["cmd"]}
+    cfg.models = {k: dict(v) for k, v in models.items() if v and v.get("cmd")}
     if "mcp_extra" in data:
         cfg.mcp_extra = {k: list(v) for k, v in data["mcp_extra"].items()}
     cfg.legacy = legacy

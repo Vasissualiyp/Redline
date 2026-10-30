@@ -66,6 +66,7 @@ gitsigns' `]c` is restored when you leave.
 | `s` (also visual) | verify the claim on this line / the selection, via refcheck or code |
 | `S` | send all open `% VERIFY` requests to the agent |
 | `E` | evidence window for the `% VERIFIED id` line here (toggle) |
+| `m` | agent pane: switch between Claude Code and opencode models (menu; also tmux prefix + `A`) |
 | `c` / `F` | compile (errors go to quickfix) / send the errors to the agent |
 | `O` | **sync to Overleaf**: push; merge Overleaf's new edits first (git, or an agent for conflicts) |
 | `Q` | close the sync output if it is open, otherwise close the whole redline session (asks first) |
@@ -187,6 +188,33 @@ as ✓, ✗ and ? signs, and you can also type requests in Overleaf. `redline ve
 prints a report, `redline evidence list|get ID|sync` work with the library, and
 `redline evidence migrate [--apply]` moves old inline results
 (`% VERIFIED key: "quote" — p.N`) into it; the dry run lists quotes it can't find.
+
+## Switching the agent
+
+`m` in review mode (`<leader>jm`, `:Redline agent`), or tmux prefix + `A` from any
+pane, lists the agents and restarts the agent pane with the one you pick (the
+conversation in it ends). The defaults:
+
+| name | runs |
+|---|---|
+| `claude` | Claude Code |
+| `deepseek` | opencode, `deepseek/deepseek-flash#high` |
+| `gpt` | opencode, `openai/gpt-6-sol#high` (greyed out until OpenAI is set up: `opencode auth login`) |
+| `qwen-local` | opencode, `ollama/qwen3.8` on vas-desktop (greyed out when the desktop is unreachable) |
+
+Picking an opencode entry writes its model into the paper's `opencode.json`; both
+agents' MCP configs (`.mcp.json`, `opencode.json`) always list the redline and
+zotero servers, and `redline open` starts the last choice. Add or change entries in
+`.redline.toml` or `~/.config/redline/config.toml`:
+
+```toml
+[models.kimi]
+label = "opencode: Kimi K3"
+cmd = "opencode --standalone"
+model = "kimi/kimi-k3"
+```
+
+`redline agent` lists them from the shell, `redline agent NAME` switches.
 
 ## Sync to Overleaf
 

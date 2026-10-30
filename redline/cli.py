@@ -123,6 +123,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--status", action="store_true", help="only report what would be closed")
     p.add_argument("--json", action="store_true")
     p.add_argument("--yes", action="store_true", help="close without asking")
+    p = sub.add_parser("agent", help="switch the agent pane between claude and opencode models")
+    p.add_argument("name", nargs="?", help="entry of [models] to switch to; omit to list")
+    p.add_argument("--list", action="store_true")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--menu", action="store_true", help="choose with a tmux menu")
+    p.add_argument("--session", help="tmux session (default: the current one)")
+    p.add_argument("--client", help="tmux client to show the menu on")
+    p.add_argument("--force", action="store_true", help="switch even if the check fails")
+    p.add_argument("--refresh", action="store_true", help="re-read opencode's model list")
     p = sub.add_parser("save-layout", help="remember the current pane arrangement for this paper")
     p.add_argument("--session", help="tmux session (default: the current one)")
     p = sub.add_parser("open", help="start the tmux workspace")
@@ -150,6 +159,8 @@ def _run(a: argparse.Namespace) -> int:
     if a.cmd == "open":
         from .launcher import open_workspace
         return open_workspace(Path(a.dir).expanduser() if a.dir else None, attach=not a.no_attach)
+    if a.cmd == "agent":
+        return _agent_cmd(a)
     if a.cmd == "quit":
         from . import launcher as LA
         session = a.session or LA._session_of_caller()
@@ -334,3 +345,38 @@ def _sync_cmd(s, a: argparse.Namespace) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def _agent_cmd(a) -> int:
+    import os
+    import subprocess
+    from . import agentpick
+    from . import launcher as LA
+    from .state import Project
+    if a.session and not os.environ.get("REDLINE_ROOT"):
+        root = LA._session_root(a.session)
+        if root:
+            os.environ["REDLINE_ROOT"] = str(root)
+    try:
+        proj = Project.open()
+        if a.menu:
+            agentpick.menu(proj, a.session or LA._session_of_caller(), a.client)
+        elif a.name:
+            msg = agentpick.switch(proj, a.name, a.session, a.force)
+            if a.session and not sys.stdout.isatty():
+                subprocess.run(["tmux", "display-message", *(["-c", a.client] if a.client else []), msg])
+            print(msg)
+        else:
+            items = agentpick.listing(proj, a.refresh)
+            if a.json:
+                print(json.dumps(items))
+            else:
+                for it in items:
+                    print(f"{'*' if it['current'] else ' '} {it['name']:12s} {it['label']}"
+                          + (f"  [{it['problem']}]" if it["problem"] else ""))
+    except (RedlineError, RuntimeError) as e:
+        if a.menu or (a.session and not sys.stdout.isatty()):
+            subprocess.run(["tmux", "display-message", *(["-c", a.client] if a.client else []),
+                            f"redline agent: {str(e).splitlines()[-1][:180]}"])
+        raise RedlineError(str(e))
+    return 0

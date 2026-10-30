@@ -16,6 +16,7 @@ from pathlib import Path
 
 from . import config as _config
 from . import sync as _sync
+from . import agentpick
 from .state import Project
 
 REPO = Path(__file__).resolve().parent.parent
@@ -66,9 +67,9 @@ def mcp_servers(proj: Project) -> dict:
     return servers
 
 
-def mcp_config(proj: Project) -> dict:
+def mcp_config(proj: Project, kind: str | None = None) -> dict:
     servers = mcp_servers(proj)
-    if proj.cfg.agent_kind == "opencode":
+    if (kind or proj.cfg.agent_kind) == "opencode":
         return {"$schema": "https://opencode.ai/config.json",
                 "mcp": {n: {"type": "local", "command": [s["command"], *s["args"]],
                             "environment": s.get("env", {}), "enabled": True}
@@ -76,25 +77,32 @@ def mcp_config(proj: Project) -> dict:
     return {"mcpServers": servers}
 
 
-def write_mcp_config(proj: Project) -> str:
-    """Merge our servers into the agent's project config (other entries are kept)."""
-    root = proj.cfg.root
-    cfg = mcp_config(proj)
-    if proj.cfg.agent_kind == "opencode":
-        path, key = root / "opencode.json", "mcp"
-    else:
-        path, key = root / ".mcp.json", "mcpServers"
+def _merge_json(path: Path, update) -> None:
     data = {}
     if path.exists():
         try:
             data = json.loads(path.read_text())
         except ValueError:
             data = {}
-    data.setdefault(key, {}).update(cfg[key])
-    if "$schema" in cfg:
-        data.setdefault("$schema", cfg["$schema"])
+    update(data)
     path.write_text(json.dumps(data, indent=2) + "\n")
-    return str(path)
+
+
+def write_mcp_config(proj: Project) -> str:
+    """Merge our servers into both agents' project configs (other entries are kept),
+    so switching the agent pane between claude and opencode keeps the tools."""
+    root = proj.cfg.root
+    paths = []
+    for kind, name, key in (("claude", ".mcp.json", "mcpServers"), ("opencode", "opencode.json", "mcp")):
+        cfg = mcp_config(proj, kind)
+
+        def upd(data, cfg=cfg, key=key):
+            data.setdefault(key, {}).update(cfg[key])
+            if "$schema" in cfg:
+                data.setdefault("$schema", cfg["$schema"])
+        _merge_json(root / name, upd)
+        paths.append(str(root / name))
+    return ", ".join(paths)
 
 
 def _tmux(*args: str, check: bool = True) -> str:
@@ -145,7 +153,7 @@ def open_workspace(root: Path | None, attach: bool = True) -> int:
                        "-x", str(cols), "-y", str(rows), "-c", str(root), *envs, in_login_shell(nvim))
         paper = f"={name}:paper"
         agent = _tmux("split-window", "-h", "-l", "40%", "-t", editor, "-c", str(root),
-                      "-P", "-F", "#{pane_id}", in_login_shell(proj.cfg.agent))
+                      "-P", "-F", "#{pane_id}", in_login_shell(agentpick.command(proj)))
         _tmux("set-option", "-p", "-t", agent, "@redline_role", "agent")
         prev = _tmux("split-window", "-v", "-l", "50%", "-t", agent, "-c", str(root),
                      "-P", "-F", "#{pane_id}", in_login_shell(f"{env_prefix}{rl} preview"))
@@ -160,6 +168,7 @@ def open_workspace(root: Path | None, attach: bool = True) -> int:
         # the arrangement saved when this paper was last quit, else the preset
         restore_layout(name, root, proj.cfg.layout)
     bind_quit_key(proj.cfg.tmux_quit_key)
+    agentpick.bind_key(proj.cfg.tmux_model_key)
     if not attach:
         print(name)
         return 0
