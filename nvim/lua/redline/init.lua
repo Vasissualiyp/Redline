@@ -303,6 +303,35 @@ function M.attach(buf)
   return st
 end
 
+--- Cursor to file:line (the PDF pane's `e`), in the window showing that file or the paper's.
+function M.goto_source(file, line)
+  local target = vim.fs.normalize(file)
+  local win
+  for _, w in ipairs(vim.api.nvim_list_wins()) do
+    if vim.fs.normalize(vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(w))) == target then
+      win = w
+      break
+    end
+  end
+  if not win then
+    for _, w in ipairs(vim.api.nvim_list_wins()) do
+      if M.bufs[vim.api.nvim_win_get_buf(w)] then
+        win = w
+        break
+      end
+    end
+    win = win or vim.api.nvim_get_current_win()
+    vim.api.nvim_set_current_win(win)
+    vim.cmd.edit(vim.fn.fnameescape(file))
+  end
+  vim.api.nvim_set_current_win(win)
+  local buf = vim.api.nvim_win_get_buf(win)
+  line = math.max(1, math.min(line, vim.api.nvim_buf_line_count(buf)))
+  vim.api.nvim_win_set_cursor(win, { line, 0 })
+  vim.cmd("normal! zz")
+  return "ok"
+end
+
 --- Entry point used by `redline open` (nvim -c "lua require('redline').start()").
 function M.start(opts)
   if opts then

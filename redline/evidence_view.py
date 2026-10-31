@@ -70,6 +70,7 @@ class EvidencePane(Pane):
         self.entry = entry
         self.zot = zot or Zotero()
         self.view.follow = False  # nothing to follow: no paper cursor here
+        self.source_jump = False  # a source paper, not ours
         self.i = 0
         self.select(0)
 

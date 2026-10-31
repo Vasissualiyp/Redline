@@ -190,6 +190,16 @@ prints a report, `redline evidence list|get ID|sync` work with the library, and
 `redline evidence migrate [--apply]` moves old inline results
 (`% VERIFIED key: "quote" — p.N`) into it; the dry run lists quotes it can't find.
 
+## PDF pane keys
+
+| key | action |
+|---|---|
+| `e` / Enter | jump to the LaTeX source of what is shown: nvim's cursor goes to the highlighted change, or to the first line of text in view, and tmux switches to the paper pane |
+| `j`/`k`, space/`b`, `g`/`G` | next / previous / first / last page |
+| `+` `-` `0` `z` | zoom in / out / fit / crop around the highlight |
+| `f` | follow the nvim cursor on/off |
+| `r` / `q` | redraw / quit |
+
 ## Compiling by itself
 
 Once the paper has been quiet for 10 seconds after an edit (yours, or an agent's),

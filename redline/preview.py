@@ -9,6 +9,7 @@ and showing a page again costs nothing. Neighbouring pages are sent while idle.
 Re-renders when the PDF changes.
 
 keys: j/k or space/b next/prev page, +/- zoom, 0 fit, z crop to the highlight,
+      e or Enter: the LaTeX source of what is shown (cursor there in nvim),
       f toggle follow, r redraw, q quit
 """
 from __future__ import annotations
@@ -74,6 +75,22 @@ def synctex_boxes(tex: Path, pdf: Path, line: int, col: int = 0) -> list[Rect]:
     return boxes
 
 
+def synctex_edit(pdf: Path, page: int, x: float, y: float) -> tuple[Path, int] | None:
+    """The source file and line typeset at (x, y) on page (pt, origin top-left)."""
+    if not shutil.which("synctex") or not pdf.exists():
+        return None
+    try:
+        out = subprocess.run(["synctex", "edit", "-o", f"{page}:{x:.1f}:{y:.1f}:{pdf}"],
+                             capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    inp = re.search(r"^Input:(.+)$", out, re.M)
+    line = re.search(r"^Line:(\d+)$", out, re.M)
+    if not (inp and line) or int(line.group(1)) < 1:
+        return None
+    return Path(inp.group(1).strip()), int(line.group(1))
+
+
 def pdf_info(pdf: Path) -> tuple[int, float]:
     """(page count, page width in pt)."""
     try:
@@ -122,6 +139,8 @@ class Pane:
         self.page_w = 612.0
         self.drawn_size = (0, 0)
         self.prefetch: list[View] = []
+        self.windows: dict[int, tuple[float, float]] = {}  # page -> visible (top, bottom) in pt
+        self.source_jump = True  # e/Enter: show the LaTeX source of what is on screen
         from .kittygfx import Kitty
         self.gfx = Kitty()
 
@@ -225,6 +244,8 @@ class Pane:
             img, hl = self._stitch(imgs, marked, s, bounds)
         else:
             img = imgs[0]
+        if len(imgs) == 1:  # visible part of the page, in pt (for jumping to the source)
+            self.windows[pages[0]] = (0.0, img.height / s)
         if (v.crop or v.zoom > 1.0) and img.width > px_w:
             # window of pane size centred on the highlight (or the page top)
             if hl:
@@ -235,6 +256,8 @@ class Pane:
             x0 = int(max(0, min(img.width - px_w, cx - px_w / 2)))
             y0 = int(max(0, min(img.height - px_h, cy - px_h / 2)))
             img = img.crop((x0, y0, x0 + px_w, y0 + px_h))
+            if len(imgs) == 1:
+                self.windows[pages[0]] = (y0 / s, (y0 + px_h) / s)
         elif hl and img.height > px_h:
             # fit-width page taller than the pane: scroll so the highlight is
             # visible; if it does not fit (e.g. it runs from the bottom of one
@@ -244,10 +267,14 @@ class Pane:
                 y0 = top - px_h / 3 if bottom - top < px_h * 2 / 3 else top - px_h / 12
                 y0 = int(max(0, min(img.height - px_h, y0)))
                 img = img.crop((0, y0, img.width, y0 + px_h))
+                if len(imgs) == 1:
+                    self.windows[pages[0]] = (y0 / s, (y0 + px_h) / s)
             else:
                 img = img.resize((max(1, int(img.width * px_h / img.height)), px_h))
         elif img.height > px_h:
             img = img.crop((0, 0, img.width, px_h))
+            if len(imgs) == 1:
+                self.windows[pages[0]] = (0.0, px_h / s)
         if img.width > px_w:
             img = img.resize((px_w, max(1, int(img.height * px_w / img.width))))
         return img
@@ -389,6 +416,31 @@ class Pane:
         self._wcache = cache
         return cache[page]
 
+    def source_point(self) -> tuple[int, float, float]:
+        """Where on screen to ask synctex: the highlight, else the first text line in view."""
+        v = self.view
+        pages = v.shown if len(v.shown) == 2 else (v.page,)
+        marked = [r for r in v.rects if r.page in pages]
+        if marked:
+            r = marked[0]
+            return r.page, (r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2
+        top, bottom = self.windows.get(v.page, (0.0, float("inf")))
+        words = [w for w in self._words(v.page) if w.y0 >= top - 1 and w.y1 <= bottom + 1]
+        if words:
+            w = min(words, key=lambda w: (round(w.y0 / 3), w.x0))
+            return v.page, (w.x0 + w.x1) / 2, (w.y0 + w.y1) / 2
+        return v.page, self.page_w / 2, top + 72
+
+    def goto_source(self) -> None:
+        page, x, y = self.source_point()
+        hit = synctex_edit(self.pdf, page, x, y)
+        if not hit:
+            self.view.status = f"p.{page}: no synctex match (recompile?)"
+            return
+        path, line = hit
+        err = _nvim_goto(self.proj, path, line)
+        self.view.status = err or f"source: {path.name}:{line}"
+
     def handle_msg(self, msg: dict) -> bool:
         if "line" in msg:
             if not self.view.follow and not msg.get("force"):
@@ -427,6 +479,8 @@ class Pane:
             v.page = self.pages
         elif k == "r":
             pass
+        elif k in ("e", "\r", "\n") and self.source_jump:
+            self.goto_source()
         elif k in ("q", "\x03"):
             raise KeyboardInterrupt
         else:
@@ -443,6 +497,32 @@ class Pane:
             self.pages, self.page_w = pdf_info(self.pdf)
             return True
         return False
+
+
+def _nvim_goto(proj: Project, path: Path, line: int) -> str:
+    """Put the paper nvim's cursor on path:line and focus its tmux pane. Returns an error or ""."""
+    from .config import socket_path
+    sock = socket_path(proj.cfg.root, "nvim")
+    if not sock.exists() or not shutil.which("nvim"):
+        return "the paper nvim is not running (no socket)"
+    expr = f"luaeval('require(\"redline\").goto_source(_A[1], _A[2])', [{json.dumps(str(path))}, {int(line)}])"
+    try:
+        r = subprocess.run(["nvim", "--server", str(sock), "--remote-expr", expr],
+                           capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return f"nvim did not answer: {e}"
+    if r.returncode != 0 or r.stdout.strip() not in ("", "ok"):
+        return f"nvim: {(r.stdout + r.stderr).strip()[:100]}"
+    here = ["-t", os.environ["TMUX_PANE"]] if os.environ.get("TMUX_PANE") else []
+    out = subprocess.run(["tmux", "list-panes", "-s", *here, "-F", "#{pane_id} #{window_id} #{@redline_role}"],
+                         capture_output=True, text=True).stdout
+    for ln in out.splitlines():
+        pid, wid, *role = ln.split()
+        if role == ["paper"]:
+            subprocess.run(["tmux", "select-window", "-t", wid], capture_output=True)
+            subprocess.run(["tmux", "select-pane", "-t", pid], capture_output=True)
+            break
+    return ""
 
 
 def _size() -> tuple[int, int]:
