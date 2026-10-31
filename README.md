@@ -189,6 +189,16 @@ prints a report, `redline evidence list|get ID|sync` work with the library, and
 `redline evidence migrate [--apply]` moves old inline results
 (`% VERIFIED key: "quote" — p.N`) into it; the dry run lists quotes it can't find.
 
+## PDF pane speed
+
+Pages are rasterised with MuPDF (`mutool`, 10-20x faster than poppler on this
+paper's figures), sent to kitty once as 256-colour PNGs (about a third of a
+full-colour PNG; it all crosses ssh as base64) and then shown with kitty's unicode
+placeholders. Kitty keeps the last 16 images, so going back to a page, or to one
+sent ahead of time, only prints the placeholder text: the pages next to the one you
+are looking at are sent while you read. `REDLINE_ICAT=1` falls back to `kitten icat`,
+which re-sends every image.
+
 ## Switching the agent
 
 `m` in review mode (`<leader>jm`, `:Redline agent`), or tmux prefix + `A` from any

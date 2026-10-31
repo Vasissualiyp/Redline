@@ -20,7 +20,9 @@
         pyDeps = ps: with ps; [ mcp pillow ];
 
         # Runtime tools the CLI shells out to.
-        runtimeTools = with pkgs; [ poppler-utils git tmux ];
+        # mupdf: mutool rasterises pages 10-20x faster than poppler (poppler stays for
+        # pdftotext, pdfinfo and as the fallback renderer)
+        runtimeTools = with pkgs; [ poppler-utils mupdf git tmux ];
 
         redline = python.pkgs.buildPythonApplication {
           pname = "redline";

@@ -3,8 +3,10 @@
 nvim sends {"line": L, "col": C, "text": excerpt} (or {"page": P}) to the
 preview socket. synctex maps the line to the page; the excerpt's words are found
 on it (pdfmatch) and marked like a highlighter pen (multiply blend, so the ink
-stays black). pdftoppm renders, `kitten icat` shows it in this tmux pane
-(unicode placeholders, so tmux redraws keep it). Re-renders when the PDF changes.
+stays black). MuPDF (or pdftoppm) renders; kittygfx sends the page to kitty once
+as a small PNG and shows it with unicode placeholders, so tmux redraws keep it
+and showing a page again costs nothing. Neighbouring pages are sent while idle.
+Re-renders when the PDF changes.
 
 keys: j/k or space/b next/prev page, +/- zoom, 0 fit, z crop to the highlight,
       f toggle follow, r redraw, q quit
@@ -22,6 +24,7 @@ import sys
 import termios
 import time
 import tty
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -118,6 +121,9 @@ class Pane:
         self.pages = 1
         self.page_w = 612.0
         self.drawn_size = (0, 0)
+        self.prefetch: list[View] = []
+        from .kittygfx import Kitty
+        self.gfx = Kitty()
 
     # ---- rendering --------------------------------------------------------------
     def render(self) -> None:
@@ -127,17 +133,76 @@ class Pane:
         # column makes the terminal wrap the line
         cols = max(10, cols - 2)
         rows -= 1  # status line
-        # flush now: icat writes to the terminal directly, and a clear still
-        # sitting in Python's buffer would erase the image right after it
         sys.stdout.write("\x1b[2J\x1b[H")
         sys.stdout.flush()
         if not self.pdf.exists():
             self._status(f"no PDF yet ({self.pdf.name}); compile from nvim with c in review mode")
             return
-        cw, ch = cell_size()
-        px_w, px_h = cols * cw, rows * ch
         v = self.view
         v.page = max(1, min(v.page, self.pages))
+        err = self._display(v, cols, rows)
+        flags = " ".join(x for x in ("follow" if v.follow else "", "crop" if v.crop else "",
+                                     f"zoom {v.zoom:.1f}" if v.zoom != 1 else "") if x)
+        pages = v.shown if len(v.shown) == 2 else (v.page,)
+        where = f"p.{pages[0]}–{pages[1]}" if len(pages) == 2 else f"p.{v.page}"
+        self._status(err or f"{where}/{self.pages}  {flags}  {v.status}")
+        # what is likely shown next: the neighbouring pages, sent while you read
+        self.prefetch = [View(page=pg, zoom=v.zoom, crop=v.crop) for pg in (v.page + 1, v.page - 1)
+                         if 1 <= pg <= self.pages and not v.shown]
+
+    def _key(self, v: View, cols: int, rows: int) -> tuple:
+        pages = v.shown if len(v.shown) == 2 else (v.page,)
+        marked = tuple((r.page, round(r.x0), round(r.y0), round(r.x1), round(r.y1))
+                       for r in v.rects if r.page in pages)
+        return (str(self.pdf), self.mtime, pages, marked, round(v.zoom, 3), v.crop, cols, rows, cell_size())
+
+    def _display(self, v: View, cols: int, rows: int, show: bool = True) -> str:
+        """Send (unless kitty has it already) and show the image for view v. Returns an error or ""."""
+        if os.environ.get("REDLINE_ICAT"):
+            return self._icat_display(v, cols, rows) if show else ""
+        key = self._key(v, cols, rows)
+        if not self.gfx.has(key):
+            cw, ch = cell_size()
+            img = self.compose(v, cols * cw, rows * ch)
+            if img is None:
+                return "rendering the page failed"
+            c = max(1, min(cols, -(-img.width // cw)))
+            r = max(1, min(rows, -(-img.height // ch)))
+            from .kittygfx import encode_png
+            self.gfx.send(key, encode_png(img), c, r)
+        if show:
+            self.gfx.show(key)
+        return ""
+
+    def _icat_display(self, v: View, cols: int, rows: int) -> str:
+        """Fallback (REDLINE_ICAT=1): kitten icat, re-sending the whole image every time."""
+        cw, ch = cell_size()
+        img = self.compose(v, cols * cw, rows * ch)
+        if img is None:
+            return "rendering the page failed"
+        png = self.tmp / "page.png"
+        img.save(png)
+        cmd = ["kitten", "icat", "--stdin=no", "--clear", "--transfer-mode=stream", "--passthrough=tmux",
+               "--place", f"{cols}x{rows}@0x0", "--scale-up", "--align=left", str(png)]
+        try:
+            r = subprocess.run(cmd, stdin=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return f"icat failed: {e}"
+        return "" if r.returncode == 0 else f"icat failed: {(r.stderr.strip() or r.returncode)}"
+
+    def prefetch_one(self) -> bool:
+        """Send one likely-next page to kitty ahead of time. False when there is nothing left."""
+        while getattr(self, "prefetch", None):
+            v = self.prefetch.pop(0)
+            cols, rows = self.drawn_size
+            if self._key(v, max(10, cols - 2), rows - 1) in self.gfx.images:
+                continue
+            self._display(v, max(10, cols - 2), rows - 1, show=False)
+            return True
+        return False
+
+    def compose(self, v: View, px_w: int, px_h: int):
+        """The image for view v (pages, highlights, zoom, crop), at most px_w x px_h."""
         pages = v.shown if len(v.shown) == 2 else (v.page,)
         marked = [r for r in v.rects if r.page in pages]
         # resolution: fit the page width to the pane, times zoom (crop zooms in 2x)
@@ -148,8 +213,7 @@ class Pane:
         for pg in pages:
             im = self._page_image(pg, dpi, [r for r in marked if r.page == pg])
             if im is None:
-                self._status("pdftoppm failed")
-                return
+                return None
             imgs.append(im)
         # highlight rectangles in image pixels (for scrolling to them)
         hl = [(r.x0 * s, r.y0 * s, r.x1 * s, r.y1 * s) for r in marked]
@@ -180,27 +244,47 @@ class Pane:
                 y0 = top - px_h / 3 if bottom - top < px_h * 2 / 3 else top - px_h / 12
                 y0 = int(max(0, min(img.height - px_h, y0)))
                 img = img.crop((0, y0, img.width, y0 + px_h))
+            else:
+                img = img.resize((max(1, int(img.width * px_h / img.height)), px_h))
         elif img.height > px_h:
             img = img.crop((0, 0, img.width, px_h))
-        png = self.tmp / "page.png"
-        img.save(png)
-        err = self._icat(png, cols, rows)
-        flags = " ".join(x for x in ("follow" if v.follow else "", "crop" if v.crop else "",
-                                     f"zoom {v.zoom:.1f}" if v.zoom != 1 else "") if x)
-        where = f"p.{pages[0]}–{pages[1]}" if len(pages) == 2 else f"p.{v.page}"
-        self._status(f"icat failed: {err}" if err else f"{where}/{self.pages}  {flags}  {v.status}")
+        if img.width > px_w:
+            img = img.resize((px_w, max(1, int(img.height * px_w / img.width))))
+        return img
+
+    def _raster(self, page: int, dpi: int):
+        """The page at dpi, uncoloured; the last few are kept (paging back is instant)."""
+        from PIL import Image
+        cache = self.__dict__.setdefault("_rcache", OrderedDict())
+        key = (str(self.pdf), self.mtime, page, dpi)
+        if key in cache:
+            cache.move_to_end(key)
+            return cache[key]
+        out = self.tmp / f"page-{page}"
+        mutool = shutil.which("mutool")
+        if mutool:  # MuPDF: 10-20x faster than poppler on figure-heavy pages
+            target = out.with_suffix(".ppm")
+            subprocess.run([mutool, "draw", "-q", "-r", str(dpi), "-o", str(target), str(self.pdf), str(page)],
+                           capture_output=True, timeout=60)
+        else:
+            target = out.with_suffix(".png")
+            subprocess.run(["pdftoppm", "-f", str(page), "-l", str(page), "-r", str(dpi),
+                            "-png", "-singlefile", str(self.pdf), str(out)], capture_output=True, timeout=60)
+        if not target.exists():
+            return None
+        img = Image.open(target).convert("RGB")
+        img.load()
+        target.unlink()
+        cache[key] = img
+        while len(cache) > 8:
+            cache.popitem(last=False)
+        return img
 
     def _page_image(self, page: int, dpi: int, rects: list[Rect]):
         from PIL import Image, ImageChops, ImageDraw
-        out = self.tmp / f"page-{page}"
-        subprocess.run(["pdftoppm", "-f", str(page), "-l", str(page), "-r", str(dpi),
-                        "-png", "-singlefile", str(self.pdf), str(out)],
-                       capture_output=True, timeout=60)
-        png = out.with_suffix(".png")
-        if not png.exists():
+        img = self._raster(page, dpi)
+        if img is None:
             return None
-        img = Image.open(png).convert("RGB")
-        png.unlink()
         if rects:
             # highlighter pen: a yellow layer multiplied into the page, so the
             # paper turns yellow behind the words and the ink stays black
@@ -253,27 +337,6 @@ class Pane:
             dy = -cut_a if r.page == first else top.height + gap - top_b
             hl.append((r.x0 * s, r.y0 * s + dy, r.x1 * s, r.y1 * s + dy))
         return img, hl
-
-    def _icat(self, png: Path, cols: int, rows: int) -> str:
-        """Draw png in the pane. Returns an error message, or "" on success.
-
-        --stdin=no matters: stdin is not a terminal here, and icat's default
-        (--stdin=detect) then reads it as a second image and refuses --place.
-        """
-        cmd = ["kitten", "icat", "--stdin=no", "--clear", "--transfer-mode=stream",
-               "--passthrough=tmux", "--place", f"{cols}x{rows}@0x0", "--scale-up",
-               "--align=left", str(png)]
-        try:
-            r = subprocess.run(cmd, stdin=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
-                               timeout=30)
-        except (OSError, subprocess.TimeoutExpired) as e:
-            msg = str(e)
-        else:
-            msg = "" if r.returncode == 0 else (r.stderr.strip() or f"exit {r.returncode}")
-        if msg:
-            with open(self.tmp / "log.txt", "a") as f:
-                f.write(f"{' '.join(cmd)}\n  -> {msg}\n")
-        return msg.splitlines()[0] if msg else ""
 
     def _status(self, text: str) -> None:
         cols, rows = _size()
@@ -462,9 +525,12 @@ def run(pane: Pane, srv: socket.socket | None = None, settle: tuple[float, ...] 
                 dirty = True
             if dirty:
                 pane.render()
+            elif not r and pane.prefetch and not os.environ.get("REDLINE_ICAT"):
+                pane.prefetch_one()  # idle: send a neighbouring page ahead of time
     except KeyboardInterrupt:
         pass
     finally:
+        pane.gfx.forget()
         if old:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
         sys.stdout.write("\x1b[?25h\x1b[2J\x1b[H")

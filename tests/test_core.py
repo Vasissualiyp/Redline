@@ -229,7 +229,7 @@ def test_real_paper_counts():
         out = ops.apply(s, ops.resolve(doc, ops.decide(doc, doc.items, action, honor_markers=False),
                                        comments="drop"))
         d2 = parse(out)
-        assert not d2.items
+        assert not [i for i in d2.items if not i.legacy]  # coauthors' \\skcomment etc. may surface
         assert "\\section{Simulation and Methods}" in out
 
 
