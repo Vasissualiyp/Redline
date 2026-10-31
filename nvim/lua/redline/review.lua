@@ -335,22 +335,50 @@ end
 -- ---- build / sync ----------------------------------------------------------------------
 M.last_compile = nil
 
-function M.compile(cb)
-  local _, st = cur()
+local compile_ns = vim.api.nvim_create_namespace("redline_compile")
+
+--- Compile errors as diagnostics on the paper buffer (cleared by a clean compile).
+local function compile_diagnostics(buf, res)
+  if not vim.api.nvim_buf_is_valid(buf) then
+    return
+  end
+  local diags, n = {}, vim.api.nvim_buf_line_count(buf)
+  for _, e in ipairs(res.errors or {}) do
+    if e.line and e.line > 0 then
+      table.insert(diags, { lnum = math.min(e.line, n) - 1, col = 0, source = "latex",
+        severity = vim.diagnostic.severity.ERROR,
+        message = (e.item ~= "" and ("[" .. e.item .. "] ") or "") .. e.message })
+    end
+  end
+  vim.diagnostic.set(compile_ns, buf, diags)
+end
+
+--- Compile the paper. opts.quiet: no "compiling…"/success messages (auto-compile);
+--- opts.buf: the paper buffer (default: the current one).
+function M.compile(cb, opts)
+  opts = opts or {}
+  local buf = opts.buf or vim.api.nvim_get_current_buf()
+  local st = core.bufs[buf]
   if not st then
     return
   end
   core.flush()
-  vim.notify("redline: compiling…")
+  if not opts.quiet then
+    vim.notify("redline: compiling…")
+  end
   vim.system(rpc.shell("compile --json"), { cwd = st.root, text = true, env = { REDLINE_ROOT = st.root } },
     vim.schedule_wrap(function(r)
       local ok, res = pcall(vim.json.decode, r.stdout or "", { luanil = { object = true, array = true } })
       if not ok or type(res) ~= "table" then
-        return vim.notify("redline compile: " .. (r.stderr or r.stdout or "?"), vim.log.levels.ERROR)
+        if not opts.quiet then
+          vim.notify("redline compile: " .. (r.stderr or r.stdout or "?"), vim.log.levels.ERROR)
+        end
+        if cb then cb(nil) end
+        return
       end
       M.last_compile = res
       local qf = {}
-      local main = vim.api.nvim_buf_get_name(vim.api.nvim_get_current_buf())
+      local main = vim.api.nvim_buf_get_name(buf)
       for _, e in ipairs(res.errors or {}) do
         table.insert(qf, { filename = main, lnum = math.max(e.line, 1), type = "E",
           text = (e.item ~= "" and ("[" .. e.item .. "] ") or "") .. e.message })
@@ -361,12 +389,15 @@ function M.compile(cb)
       end
       vim.fn.setqflist(qf, "r")
       vim.fn.setqflist({}, "a", { title = "redline compile" })
-      if res.ok then
-        vim.notify(("redline: compiled in %.0fs%s"):format(res.seconds,
-          #(res.undefined or {}) > 0 and (" (" .. #res.undefined .. " undefined refs)") or ""))
-      else
-        vim.notify(("redline: compile failed, %d error(s) in quickfix; %s sends them to the agent")
-          :format(#(res.errors or {}), core.config.prefix .. "F"), vim.log.levels.ERROR)
+      compile_diagnostics(buf, res)
+      if not opts.quiet then
+        if res.ok then
+          vim.notify(("redline: compiled in %.0fs%s"):format(res.seconds,
+            #(res.undefined or {}) > 0 and (" (" .. #res.undefined .. " undefined refs)") or ""))
+        else
+          vim.notify(("redline: compile failed, %d error(s) in quickfix; %s sends them to the agent")
+            :format(#(res.errors or {}), core.config.prefix .. "F"), vim.log.levels.ERROR)
+        end
       end
       if cb then cb(res) end
     end))
@@ -439,6 +470,7 @@ local REVIEW_KEYS = {
   { "n", "gl", function() require("redline.picker").pick() end, "list changes" },
   { "n", "K", function() require("redline.picker").details(M.current()) end, "change details" },
   { "n", "c", function() M.compile() end, "compile" },
+  { "n", "T", function() require("redline.autocompile").toggle() end, "auto-compile on/off" },
   { "n", "F", M.fix_with_agent, "send compile errors to the agent" },
   { "n", "s", function() require("redline.verify").request(false) end, "verify the claim on this line (code/refcheck)" },
   { "x", "s", function() require("redline.verify").request(true) end, "verify the selected claim (code/refcheck)" },
@@ -572,6 +604,7 @@ function M.buffer_maps(buf)
   map("x", p .. "d", M.send_visual, "ask the agent about the selection")
   map("n", p .. "l", function() require("redline.picker").pick() end, "list changes")
   map("n", p .. "c", function() M.compile() end, "compile")
+  map("n", p .. "t", function() require("redline.autocompile").toggle() end, "auto-compile on/off")
   map("n", p .. "F", M.fix_with_agent, "send compile errors to the agent")
   map("n", p .. "r", function()
     vim.wo.conceallevel = vim.wo.conceallevel >= 2 and 0 or 2

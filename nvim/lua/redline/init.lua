@@ -12,6 +12,7 @@ M.config = {
   follow = true, -- move the PDF pane with the cursor in review mode
   labels = true, -- show C12 (and %N notes) at the end of changed lines in review mode
   label_origin = false, -- also show who made the change (claude-code, opencode, ...)
+  auto_compile = 10, -- compile once the paper has been quiet this many seconds (0 = off)
 }
 
 -- per-buffer state: { root, data, tick, review, saved_text, watcher }
@@ -294,6 +295,8 @@ function M.attach(buf)
     vim.api.nvim_create_autocmd({ "TextChanged", "InsertLeave" },
       { group = group, buffer = buf, callback = function() autosave() end })
   end
+  vim.api.nvim_create_autocmd({ "TextChanged", "InsertLeave" },
+    { group = group, buffer = buf, callback = function() require("redline.autocompile").poke(buf) end })
   watch(buf)
   require("redline.review").buffer_maps(buf)
   M.refresh(buf)

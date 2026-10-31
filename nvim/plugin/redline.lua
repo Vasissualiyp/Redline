@@ -24,6 +24,7 @@ local subcommands = {
   verifyall = function() require("redline.verify").send_all() end,
   evidence = function() require("redline.verify").evidence() end,
   agent = function() require("redline.agent").pick() end,
+  autocompile = function() require("redline.autocompile").toggle() end,
   sendnotes = function() require("redline.review").send_notes() end,
   lint = function(args)
     local core = require("redline")

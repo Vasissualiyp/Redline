@@ -3,6 +3,8 @@
 -- lightline.vim (detected): its mode component shows REVIEW, and the mode
 -- segment takes M.color, as INSERT or VISUAL take theirs. Visual and insert
 -- still show as usual inside review mode.
+-- While compiling, the label reads "REVIEW TeX…"; while the paper fails to
+-- compile, "REVIEW TeX ✗" (require("redline.autocompile").status() for others).
 -- lualine / other statuslines: use require("redline.statusline").mode(), which is
 -- "REVIEW" or nil, e.g. lualine_a = { { "mode", fmt = function(s)
 --   return require("redline.statusline").mode() or s end } }
@@ -33,7 +35,8 @@ end
 
 --- What lightline's mode component shows (called from the statusline).
 function M.lightline_label()
-  return M.mode() or vim.fn["lightline#mode"]()
+  local tex = M.in_review() and require("redline.autocompile").status() or ""
+  return (M.mode() or vim.fn["lightline#mode"]()) .. (tex ~= "" and (" " .. tex) or "")
 end
 
 local function hook_lightline()

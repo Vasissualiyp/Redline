@@ -108,3 +108,22 @@ def test_keep_note(svc):
     it = _noted(svc)
     svc.revise_change(it.id, new_text="another clause, ", keep_note=True)
     assert "%N why this clause?" in svc.proj.read()
+
+
+def test_only_clean_compiles_reach_the_pdf_pane(svc, monkeypatch):
+    proj = svc.proj
+    out = C.build_dir(proj)
+
+    def fake_latexmk(proj, tex, outdir, timeout, rc=[0]):
+        outdir.mkdir(parents=True, exist_ok=True)
+        (outdir / "paper.pdf").write_text(f"pdf rc={rc[0]}")
+        (outdir / "paper.log").write_text("" if rc[0] == 0 else "./paper.tex:3: Undefined control sequence.\n")
+        return rc[0], 0.1
+    monkeypatch.setattr(C, "_latexmk", fake_latexmk)
+    monkeypatch.setattr(C.shutil, "which", lambda exe: "/bin/" + exe)
+    assert C.run(proj).ok and C.view_pdf(proj).read_text() == "pdf rc=0"
+    fake_latexmk.__defaults__[0][0] = 1
+    res = C.run(proj)
+    assert not res.ok and res.errors
+    assert (out / "paper.pdf").read_text() == "pdf rc=1"
+    assert C.view_pdf(proj).read_text() == "pdf rc=0"  # the pane keeps the last clean PDF

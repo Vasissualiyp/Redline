@@ -112,7 +112,7 @@ def page_height(pdf: Path, page: int) -> float:
 class Pane:
     def __init__(self, proj: Project, pdf: Path | None = None, tmp: Path | None = None):
         self.proj = proj
-        self.pdf = pdf or _compile.pdf_path(proj)
+        self.pdf = pdf or _compile.view_pdf(proj)
         self.tex = proj.main
         self.view = View()
         self.tmp = tmp or proj.dir / "preview"
@@ -455,6 +455,8 @@ def _size() -> tuple[int, int]:
 
 
 def main(proj: Project) -> int:
+    if not _compile.view_pdf(proj).exists():
+        _compile.publish(proj)  # a build from before the view copy existed
     pane = Pane(proj)
     from .config import socket_path
     sock_path = socket_path(proj.cfg.root, "preview")

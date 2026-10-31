@@ -68,6 +68,7 @@ gitsigns' `]c` is restored when you leave.
 | `E` | evidence window for the `% VERIFIED id` line here (toggle) |
 | `m` | agent pane: switch between Claude Code and opencode models (menu; also tmux prefix + `A`) |
 | `c` / `F` | compile (errors go to quickfix) / send the errors to the agent |
+| `T` | auto-compile on/off (compiles 10 s after the last edit) |
 | `O` | **sync to Overleaf**: push; merge Overleaf's new edits first (git, or an agent for conflicts) |
 | `Q` | close the sync output if it is open, otherwise close the whole redline session (asks first) |
 | `P` / `L` | pull+merge+push / pull (3-way merge) |
@@ -188,6 +189,19 @@ as ✓, ✗ and ? signs, and you can also type requests in Overleaf. `redline ve
 prints a report, `redline evidence list|get ID|sync` work with the library, and
 `redline evidence migrate [--apply]` moves old inline results
 (`% VERIFIED key: "quote" — p.N`) into it; the dry run lists quotes it can't find.
+
+## Compiling by itself
+
+Once the paper has been quiet for 10 seconds after an edit (yours, or an agent's),
+it compiles by itself. Typing in insert mode does not start the countdown until
+you leave insert mode, only one compile runs at a time (edits made during one queue
+exactly one more), and a manual `c` still compiles right away. Errors show as
+diagnostics on their lines and in the quickfix list; a message appears only when
+the paper stops or starts compiling, and in review mode the statusline reads
+`REVIEW TeX…` while compiling and `REVIEW TeX ✗` while it fails. The PDF pane only
+ever shows the last PDF that compiled cleanly (`.redline/view/`). `T` in review mode
+(`<leader>jt`, `:Redline autocompile`) turns it on or off; `auto_compile = 10` in the
+plugin setup sets the delay (0 = off).
 
 ## PDF pane speed
 

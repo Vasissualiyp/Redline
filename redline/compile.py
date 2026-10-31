@@ -1,6 +1,7 @@
 """latexmk runner + log parser that maps errors back to changes."""
 from __future__ import annotations
 
+import fcntl
 import os
 import re
 import shutil
@@ -123,7 +124,30 @@ def build_dir(proj: Project) -> Path:
 
 
 def pdf_path(proj: Project) -> Path:
+    """The PDF latexmk writes (also after a failed run)."""
     return build_dir(proj) / (proj.main.stem + ".pdf")
+
+
+def view_pdf(proj: Project) -> Path:
+    """The last PDF that compiled cleanly: what the PDF pane shows."""
+    return proj.dir / "view" / (proj.main.stem + ".pdf")
+
+
+def publish(proj: Project) -> None:
+    """Copy the built PDF (and its synctex) to the view, replacing it in one step."""
+    src = pdf_path(proj)
+    if not src.exists():
+        return
+    dst = view_pdf(proj)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    sync = src.with_suffix(".synctex.gz")
+    if sync.exists():
+        tmp = dst.parent / (".tmp-" + sync.name)
+        shutil.copy2(sync, tmp)
+        os.replace(tmp, dst.with_suffix(".synctex.gz"))
+    tmp = dst.parent / (".tmp-" + dst.name)
+    shutil.copy2(src, tmp)
+    os.replace(tmp, dst)
 
 
 def run(proj: Project, isolate: bool = False) -> CompileResult:
@@ -131,7 +155,20 @@ def run(proj: Project, isolate: bool = False) -> CompileResult:
         return CompileResult(False, "", 0, [TexError(0, "latexmk not found on PATH")])
     proj.flush_editor()
     outdir = build_dir(proj)
-    rc, secs = _latexmk(proj, proj.main, outdir, proj.cfg.compile_timeout)
+    outdir.mkdir(parents=True, exist_ok=True)
+    # one latexmk at a time in the build directory (manual, automatic, agent)
+    with open(outdir / ".lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        rc, secs = _latexmk(proj, proj.main, outdir, proj.cfg.compile_timeout)
+        res = _result(proj, rc, secs, outdir)
+        if res.ok:
+            publish(proj)
+    if isolate and res.errors:
+        res.isolated = isolate_errors(proj, proj.doc(), res.errors)
+    return res
+
+
+def _result(proj: Project, rc: int, secs: float, outdir: Path) -> CompileResult:
     log_path = outdir / (proj.main.stem + ".log")
     log = log_path.read_text(errors="replace") if log_path.exists() else ""
     errors, undefined, warnings = parse_log(log, proj.main.name)
@@ -141,12 +178,9 @@ def run(proj: Project, isolate: bool = False) -> CompileResult:
         errors.append(TexError(0, f"latexmk exited with {rc} (see log tail)"))
     doc = proj.doc()
     map_errors(doc, errors)
-    res = CompileResult(ok=rc == 0 and not errors, pdf=str(pdf_path(proj)), seconds=secs,
-                        errors=errors, undefined=undefined, warnings=warnings,
-                        log_tail="\n".join(log.splitlines()[-40:]))
-    if isolate and errors:
-        res.isolated = isolate_errors(proj, doc, errors)
-    return res
+    return CompileResult(ok=rc == 0 and not errors, pdf=str(view_pdf(proj)), seconds=secs,
+                         errors=errors, undefined=undefined, warnings=warnings,
+                         log_tail="\n".join(log.splitlines()[-40:]))
 
 
 def isolate_errors(proj: Project, doc: Document, errors: list[TexError], limit: int = 3) -> list[dict]:

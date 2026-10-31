@@ -131,7 +131,7 @@ class Service:
             "markers": {k: sum(1 for i in doc.items if i.marker and i.marker.kind == k) for k in "YNX"},
             "lint_errors": sum(1 for i in _lint.lint(doc) if i.severity == "error"),
             "has_base": (self.proj.dir / "base").exists(),
-            "pdf": str(_compile.pdf_path(self.proj)),
+            "pdf": str(_compile.view_pdf(self.proj)),
         }
         return st
 
