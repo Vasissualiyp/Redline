@@ -136,30 +136,144 @@ class Service:
         return st
 
     # ---- proposing --------------------------------------------------------------
-    def _edit(self, fn, reason: str, origin: str | None) -> str:
+    def _citing_items(self, doc: Document, fn) -> dict[str, list[str]]:
+        """Changes this edit would create whose new text cites papers: {item id: keys}.
+
+        Text that only moves (the same keys leave another place in the same edit)
+        is not a new claim; anything else that cites must be refchecked."""
+        mid = ops.apply(doc.src, fn(doc))
+        d2 = self.proj.doc(mid)
+        olds = {i.id for i in doc.items}
+        new = [i for i in d2.items if i.id not in olds]
+        removed = set().union(*(_verify.cite_keys(i.body(mid) if i.kind == "deleted" else i.old(mid))
+                                for i in new if i.kind in ("deleted", "replaced")))
+        out = {}
+        for it in new:
+            if it.kind not in ("added", "replaced"):
+                continue
+            text = it.new(mid)
+            keys = [k for k in dict.fromkeys(re.findall(r"[^\s,{}]+", " ".join(
+                m.group(1) for m in _verify._CITE.finditer(text or "")))) if k]
+            if it.kind == "added":
+                keys = [k for k in keys if k not in removed]  # moved, not new
+            if keys:
+                out[it.id] = keys
+        return out
+
+    def _refcheck(self, need: dict[str, list[str]], evidence: list[dict] | None,
+                  unchecked_reason: str | None) -> tuple[list, str]:
+        """Check the evidence for every cited key; returns (sources, summary)."""
+        keys = list(dict.fromkeys(k for ks in need.values() for k in ks))
+        if unchecked_reason:
+            return [], f"not refchecked ({unchecked_reason}): marked % UNVERIFIED"
+        srcs = [_evidence.Source.of(x) for x in (evidence or [])]
+        have = {s.bibkey for s in srcs if s.quote}
+        missing = [k for k in keys if k not in have]
+        if missing:
+            raise RedlineError(
+                "every citation in new or changed text is refchecked, and nothing was written: "
+                f"pass evidence=[{{bibkey, page, quote, section}}] for {', '.join(missing)}: the exact "
+                "sentence(s) from that paper's PDF that support this text. If the human explicitly "
+                "said not to check, pass unchecked_reason instead.")
+        bib = self.zot()._bib_entries() if self._bibfile() else {}
+        absent = [k for k in keys if bib and k not in bib]
+        if absent:
+            raise RedlineError(f"{', '.join(absent)}: not in the .bib; add the entry first (the right "
+                               "paper: check its title and DOI)")
+        if not self.zot().available():
+            raise RedlineError("Zotero is not reachable, so the citation(s) cannot be refchecked and "
+                               "nothing was written: start Zotero (or the zotero-remote tunnel) and call again")
+        srcs = [s for s in srcs if s.bibkey in keys]
+        self._check_sources(srcs)  # strict: a quote not on its page refuses the edit
+        lines = []
+        for k in keys:
+            s = next(x for x in srcs if x.bibkey == k)
+            title = ""
+            try:
+                title = self.zot().get(f"/items/{s.item_key}").get("data", {}).get("title", "")
+            except _zotero.ZoteroError:
+                pass
+            want = _zotero.plain(bib.get(k, {}).get("title", ""))
+            if title and want:
+                import difflib
+                ratio = difflib.SequenceMatcher(None, _zotero._norm(title), _zotero._norm(want)).ratio()
+                if ratio < 0.6:
+                    raise RedlineError(f"{k}: the .bib entry is «{want}» but Zotero found «{title}»; "
+                                       "the key points at the wrong paper. Fix the .bib entry first.")
+            lines.append(f"  {k} → «{title or want}», quote found on p.{s.page}")
+        return srcs, "refchecked:\n" + "\n".join(lines)
+
+    def _edit(self, fn, reason: str, origin: str | None, evidence: list[dict] | None = None,
+              unchecked_reason: str | None = None) -> str:
+        doc = self.proj.doc()
+        need = self._citing_items(doc, fn)
+        entries: dict[str, _evidence.Entry] = {}
+        summary = ""
+        if need:
+            srcs, summary = self._refcheck(need, evidence, unchecked_reason)
+            lib = self.library()
+            used = {r.id for r in _verify.results(doc) if r.id}
+            for iid, keys in need.items():
+                mine = [s for s in srcs if s.bibkey in keys]
+                status = "UNVERIFIED" if unchecked_reason else "VERIFIED"
+                eid = lib.next_id(keys[0], used)
+                used.add(eid)
+                entries[iid] = _evidence.Entry(eid, status, reason=unchecked_reason and
+                                               f"not checked: {unchecked_reason}" or "",
+                                               sources=mine or [_evidence.Source(bibkey=k) for k in keys],
+                                               created=_evidence.now())
+            inner = fn
+
+            def fn(d):  # the change and its result line(s), as one write
+                mid = ops.apply(d.src, inner(d))
+                d2 = self.proj.doc(mid)
+                olds = {i.id for i in d.items}
+                text = mid
+                for it in sorted((i for i in d2.items if i.id not in olds and i.id in entries),
+                                 key=lambda i: -i.full_end):
+                    e = entries[it.id]
+                    e.claim = " ".join((it.new(mid) or "").split())[:600]
+                    sec = d2.section_at(it.start)
+                    e.section = sec.label if sec else ""
+                    line = _verify.short_line(e.status, e.id, e.also)
+                    dd = self.proj.doc(text)
+                    text = ops.apply(text, _verify.place(dd, line, after_line=dd.line_of(it.full_end - 1)))
+                return [_diff_edit(d.src, text)]
         before, after = self.proj.transact(fn, reason=reason, origin=origin)
+        if entries:
+            lib = self.library()
+            for e in entries.values():
+                lib.put(e)
+            lib.save()
+            for e in entries.values():
+                self._push(e)
+                lib.put(e)
+            lib.save()
         old_ids = {i.id for i in before.items}
         new = [i for i in after.items if i.id not in old_ids]
         org = self.proj.origins()
         errs = [i for i in _lint.lint(after) if i.severity == "error"
                 and any(n.line_start <= i.line <= n.line_end for n in new)]
         out = "\n".join("created " + format_item(describe(after, i, org)) for i in new) or "done"
+        if summary:
+            out += "\n" + summary + "".join(f"\n  % {e.status} {e.id} (Zotero: {e.zotero})" for e in entries.values())
         if errs:
             out += "\nLINT ERRORS:\n" + "\n".join(f"  l.{e.line} {e.code}: {e.message}" for e in errs)
         return out
 
-    def propose_replace(self, old_text, new_text, comment=None, section=None, occurrence=None, origin=None):
+    def propose_replace(self, old_text, new_text, comment=None, section=None, occurrence=None, origin=None,
+                        evidence=None, unchecked_reason=None):
         return self._edit(lambda d: author.propose_replace(d, old_text, new_text, comment, section, occurrence),
-                          "propose_replace", origin)
+                          "propose_replace", origin, evidence, unchecked_reason)
 
     def propose_delete(self, old_text, comment=None, section=None, occurrence=None, origin=None):
         return self._edit(lambda d: author.propose_delete(d, old_text, comment, section, occurrence),
                           "propose_delete", origin)
 
     def propose_insert(self, text, after=None, before=None, comment=None, section=None,
-                       occurrence=None, origin=None):
+                       occurrence=None, origin=None, evidence=None, unchecked_reason=None):
         return self._edit(lambda d: author.propose_insert(d, text, after, before, comment, section, occurrence),
-                          "propose_insert", origin)
+                          "propose_insert", origin, evidence, unchecked_reason)
 
     def add_comment(self, anchor, text, section=None, occurrence=None, origin=None):
         return self._edit(lambda d: author.add_comment(d, anchor, text, section, occurrence),
@@ -177,7 +291,8 @@ class Service:
                                                         to_section, occurrence),
                           "propose_move", origin)
 
-    def revise_change(self, id, new_text=None, comment=None, origin=None, keep_note=False):
+    def revise_change(self, id, new_text=None, comment=None, origin=None, keep_note=False,
+                      evidence=None, unchecked_reason=None):
         """Revising answers a %N note, so the note is cleared and the change is unrated again."""
         def fn(d: Document):
             it = d.find(id)
@@ -190,7 +305,7 @@ class Service:
             if it2 is None or it2.marker is None:
                 return edits
             return [_diff_edit(d.src, ops.apply(mid, ops.set_marker(d2, it2, None)))]
-        return self._edit(fn, f"revise {id}", origin)
+        return self._edit(fn, f"revise {id}", origin, evidence, unchecked_reason)
 
     # ---- resolving -------------------------------------------------------------------
     def resolve(self, action: str, selector: dict, comments: str = "auto",

@@ -210,3 +210,44 @@ def report(doc: Document) -> str:
         lines.append(f"  {old} result(s) still carry their evidence inline "
                      "(`redline evidence migrate` moves it into the library)")
     return "\n".join(lines)
+
+
+# ---- citations a change introduces ------------------------------------------------
+_CITE = re.compile(r"\\[A-Za-z]*cite[A-Za-z]*\*?(?:\s*\[[^\]]*\]){0,2}\s*\{([^{}]*)\}")
+
+
+def cite_keys(text: str | None) -> set[str]:
+    return {k.strip() for m in _CITE.finditer(text or "") for k in m.group(1).split(",") if k.strip()}
+
+
+def results_after(doc: Document, pos: int) -> list[Result]:
+    """Result lines in the block of %-comment lines right after the line holding pos."""
+    by_line = {r.line: r for r in results(doc)}
+    lines = doc.src.splitlines()
+    n, out = doc.line_of(pos) + 1, []
+    while n <= len(lines) and lines[n - 1].lstrip().startswith("%"):
+        if n in by_line:
+            out.append(by_line[n])
+        n += 1
+    return out
+
+
+def result_keys(r: Result) -> set[str]:
+    return ({r.id.rsplit("#", 1)[0], *r.also} if r.id else set())
+
+
+def new_citations(doc: Document, it) -> set[str]:
+    """Keys a pending change cites that the text it replaces did not."""
+    if it.kind not in ("added", "replaced"):
+        return set()
+    return cite_keys(it.new(doc.src)) - cite_keys(it.old(doc.src))
+
+
+def unverified_citations(doc: Document, it) -> set[str]:
+    """New keys of a change with no % VERIFIED/REFUTED result naming them right after it."""
+    new = new_citations(doc, it)
+    if not new:
+        return set()
+    done = set().union(*(result_keys(r) for r in results_after(doc, it.full_end - 1)
+                         if r.status in ("VERIFIED", "REFUTED")))
+    return new - done

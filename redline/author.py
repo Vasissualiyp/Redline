@@ -314,6 +314,11 @@ def plain_edit(doc: Document, old_text: str, new_text: str, section: str | None 
     _check_span(doc, s, e, what="old_text")
     _clean_arg(new_text, "new_text")
     old = doc.src[s:e]
+    from .verify import cite_keys
+    fresh = cite_keys(new_text) - cite_keys(old)
+    if fresh:
+        raise RedlineError(f"plain_edit cannot add citations ({', '.join(sorted(fresh))}): use "
+                           "propose_replace/propose_insert with evidence=[...] so they are refchecked")
     a, b = _prose(old), _prose(new_text)
     sm = difflib.SequenceMatcher(None, a, b, autojunk=False)
     changed = sum(max(i2 - i1, j2 - j1) for op, i1, i2, j1, j2 in sm.get_opcodes() if op != "equal")

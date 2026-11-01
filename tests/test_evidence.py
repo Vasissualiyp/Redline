@@ -46,6 +46,9 @@ class FakeZotero:
         self.highlights[key] = dict(att=att, page=page, text=text, tags=tags, color=color, comment=comment)
         return {"key": key, "page_index": page - 1, "rects": [[100, 700, 300, 712]]}
 
+    def get(self, path):
+        return {"data": {"title": "A paper"}}
+
     def collection(self, path):
         return "COLL"
 
@@ -221,3 +224,74 @@ def test_note_is_wrapped_to_the_pane():
     visible = [re.sub(r"\x1b\[[0-9;]*m", "", ln) for ln in text.splitlines()]
     assert max(len(ln) for ln in visible) <= 50
     assert "VERIFIED  abel02#1" in visible[0] and any(ln.startswith("  │ quote") for ln in visible)
+
+
+# ---- every new citation is refchecked ------------------------------------------------
+def test_cited_text_without_evidence_is_refused(svc):
+    before = svc.proj.read()
+    with pytest.raises(RedlineError, match="refchecked.*nothing was written.*abel02"):
+        svc.propose_insert(" (see \\citep{abel02})", after="Pop III stars form in minihaloes")
+    assert svc.proj.read() == before
+
+
+def test_cited_text_with_evidence_gets_its_result_line(svc):
+    out = svc.propose_insert(" as shown by \\citep{abel02}", after="stars form in minihaloes",
+                             evidence=[QUOTE])
+    t = svc.proj.read()
+    assert "\\added{as shown by \\citep{abel02}}" in t and "% VERIFIED abel02#1" in t, t
+    assert "refchecked" in out and "quote found on p.2" in out
+    assert svc.library().get("abel02#1").sources[0].ann_key == "ANN1"
+    assert not [i for i in __import__("redline.lint", fromlist=["x"]).lint(svc.proj.doc())
+                if i.code == "unverified-citation"]
+
+
+def test_wrong_quote_refuses_the_whole_edit(svc):
+    before = svc.proj.read()
+    with pytest.raises(RedlineError, match="exact text"):
+        svc.propose_insert(" \\citep{abel02}", after="stars form in minihaloes",
+                           evidence=[dict(QUOTE, quote="made up words")])
+    assert svc.proj.read() == before and not svc.library().entries
+
+
+def test_zotero_down_refuses_cited_edits(svc):
+    svc._zot.up = False
+    with pytest.raises(RedlineError, match="Zotero is not reachable"):
+        svc.propose_insert(" \\citep{abel02}", after="stars form in minihaloes", evidence=[QUOTE])
+
+
+def test_unchecked_reason_marks_unverified(svc):
+    svc.propose_insert(" \\citep{abel02}", after="stars form in minihaloes", unchecked_reason="author said skip")
+    t = svc.proj.read()
+    assert "% UNVERIFIED abel02#1" in t
+    assert "author said skip" in svc.evidence("abel02#1")
+
+
+def test_uncited_edits_and_existing_citations_need_no_evidence(svc):
+    svc.propose_insert(" really", after="stars form in minihaloes")
+    svc.propose_replace("We study", "We examine")  # no citation involved
+    assert "\\added{really}" in svc.proj.read()
+
+
+def test_plain_edit_cannot_add_a_citation(svc):
+    with pytest.raises(RedlineError, match="cannot add citations"):
+        svc.plain_edit("high rate.", "high rate \\citep{bromm04}.")
+
+
+def test_rejecting_a_cited_change_removes_its_verified_line(svc):
+    from redline import ops
+    from redline.parse import parse
+    svc.propose_insert(" as shown by \\citep{abel02}", after="stars form in minihaloes", evidence=[QUOTE])
+    doc = parse(svc.proj.read())
+    it = next(i for i in doc.items if "as shown" in (i.new(doc.src) or ""))
+    out = ops.apply(doc.src, ops.resolve(doc, ops.decide(doc, [it], "reject", honor_markers=False)))
+    assert "as shown" not in out and "abel02#1" not in out
+    acc = ops.apply(doc.src, ops.resolve(doc, ops.decide(doc, [it], "accept", honor_markers=False)))
+    assert "% VERIFIED abel02#1" in acc  # accepted: the evidence stays
+
+
+def test_lint_flags_hand_added_unchecked_citations(svc):
+    from redline import lint
+    from redline.parse import parse
+    src = svc.proj.read().replace("minihaloes", "minihaloes\\added{ \\citep{bromm04}}", 1)
+    issues = [i for i in lint.lint(parse(src)) if i.code == "unverified-citation"]
+    assert issues and "bromm04" in issues[0].message

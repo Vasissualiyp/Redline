@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from . import verify as _verify
 from .model import Change, Document, Marker, RedlineError, TextEdit
 
 CITE_CMDS = r"(?:cite[a-zA-Z]*|autoref|ref|eqref|cref|Cref|pageref)"
@@ -145,6 +146,13 @@ def resolve(doc: Document, decisions: list[Decision], *, comments: str = "auto",
                 edits.append(TextEdit(it.start, it.end, text))
                 if drop_comment:
                     edits.append(TextEdit(it.comment.start, it.comment.end, ""))
+        if d.action == "reject":
+            # its refcheck results go with it: a % VERIFIED line naming only keys
+            # this change introduced would vouch for a citation that is gone
+            new_keys = _verify.new_citations(doc, it)
+            for r in _verify.results_after(doc, it.full_end - 1) if new_keys else []:
+                if r.id and _verify.result_keys(r) <= new_keys:
+                    edits.append(TextEdit(r.start, r.end, ""))
         mk = it.marker
         if mk is not None and not (it.start <= mk.start < it.end):
             if not (it.comment and it.comment.start <= mk.start < it.comment.end):

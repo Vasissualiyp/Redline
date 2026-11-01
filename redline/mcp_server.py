@@ -29,6 +29,15 @@ reject every suggestion from their editor. Rules:
   asked to address feedback; revise_change() a %N suggestion instead of stacking a
   new one on top. revise_change clears the %N (the human re-reviews the change); if
   you disagree with a note, answer it with revise_change(id, comment="Kept: <why>").
+- REFCHECK IS MANDATORY. Every new or changed citation is verified against the cited
+  paper's PDF before it is written: propose_replace/insert/revise_change refuse text that
+  cites a key without evidence=[{bibkey, page, quote, section}] (exact quotes from the
+  PDF; the .bib key must also be the paper Zotero holds). Whenever you check anything in
+  the paper (a claim, a number, a reference, "make sure the facts are solid") you record
+  the outcome with record_verification, so a `% VERIFIED/REFUTED/UNVERIFIED id` line is
+  left; a check that leaves no such line did not happen. Only when the human explicitly
+  says not to check, pass unchecked_reason (the result is marked % UNVERIFIED). lint()
+  flags new citations that have no result line.
 - Pending changes are addressed by id (stable hash like a3f9c2) or label (C12;
   labels renumber after every edit, ids do not).
 - Run compile() after a batch of edits and fix what it reports. lint(fix=true) fixes
@@ -112,22 +121,41 @@ def status() -> str:
 @mcp.tool()
 def propose_replace(old_text: str, new_text: str, comment: str | None = None,
                     section: str | None = None, occurrence: int | None = None,
-                    tag: str | None = None, ctx: Context | None = None) -> str:
+                    tag: str | None = None, evidence: list[dict[str, Any]] | None = None,
+                    unchecked_reason: str | None = None, ctx: Context | None = None) -> str:
     """Suggest replacing old_text (exact, unique) with new_text as \\replaced{new}{old}.
     Paragraph breaks and citations are handled automatically. tag overrides the
-    recorded origin (e.g. "refcheck")."""
+    recorded origin (e.g. "refcheck").
+
+    Citations: any \\cite in the new text is refchecked in the same call. Pass
+    evidence=[{bibkey, page, quote, section}] for every new key (exact sentence(s) from
+    that paper's PDF that support the text); the quotes are matched on the page, the .bib
+    key is compared with the Zotero item, and Redline adds the `% VERIFIED key#n` line
+    itself. Without evidence the call is refused and nothing is written. unchecked_reason
+    is only for when the human explicitly said not to check (the result is then marked
+    % UNVERIFIED)."""
     return _safe(svc().propose_replace, old_text, new_text, comment, section, occurrence,
-                 _origin(ctx, tag))
+                 _origin(ctx, tag), evidence, unchecked_reason)
 
 
 @mcp.tool()
 def propose_insert(text: str, after: str | None = None, before: str | None = None,
                    comment: str | None = None, section: str | None = None,
-                   occurrence: int | None = None, tag: str | None = None, ctx: Context | None = None) -> str:
+                   occurrence: int | None = None, tag: str | None = None,
+                   evidence: list[dict[str, Any]] | None = None, unchecked_reason: str | None = None,
+                   ctx: Context | None = None) -> str:
     """Suggest inserting text right after (or before) an exact anchor, as \\added{text}.
-    Include the leading space/punctuation you need."""
+    Include the leading space/punctuation you need.
+
+    Citations: any \\cite in the new text is refchecked in the same call. Pass
+    evidence=[{bibkey, page, quote, section}] for every new key (exact sentence(s) from
+    that paper's PDF that support the text); the quotes are matched on the page, the .bib
+    key is compared with the Zotero item, and Redline adds the `% VERIFIED key#n` line
+    itself. Without evidence the call is refused and nothing is written. unchecked_reason
+    is only for when the human explicitly said not to check (the result is then marked
+    % UNVERIFIED)."""
     return _safe(svc().propose_insert, text, after, before, comment, section, occurrence,
-                 _origin(ctx, tag))
+                 _origin(ctx, tag), evidence, unchecked_reason)
 
 
 @mcp.tool()
@@ -172,13 +200,16 @@ def plain_edit(old_text: str, new_text: str, section: str | None = None,
 
 @mcp.tool()
 def revise_change(id: str, new_text: str | None = None, comment: str | None = None,
-                  keep_note: bool = False, ctx: Context | None = None) -> str:
+                  keep_note: bool = False, evidence: list[dict[str, Any]] | None = None,
+                  unchecked_reason: str | None = None, ctx: Context | None = None) -> str:
     """Rewrite a pending suggestion in place: new_text replaces its new text (a deletion
     becomes a replacement); comment sets/replaces its explaining \\chcomment.
     This answers the human's %N note on the change, so the %N marker is removed and the
     change becomes unrated for re-review (keep_note=true leaves it). To answer a note
-    without changing the text, pass only comment (e.g. "Kept: <why>")."""
-    return _safe(svc().revise_change, id, new_text, comment, _origin(ctx, None), keep_note)
+    without changing the text, pass only comment (e.g. "Kept: <why>").
+    New citations in new_text need evidence=[...] exactly as in propose_insert."""
+    return _safe(svc().revise_change, id, new_text, comment, _origin(ctx, None), keep_note,
+                 evidence, unchecked_reason)
 
 
 @mcp.tool()

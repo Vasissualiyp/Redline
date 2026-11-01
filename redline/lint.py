@@ -18,6 +18,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from . import verify as _verify
 from .model import Change, Document, Span, TextEdit
 from .ops import apply, tidy_lines
 from .parse import mask, match_group, parse
@@ -164,6 +165,14 @@ def lint(doc: Document) -> list[Issue]:
     for m in re.finditer(r"^(<{7}|>{7}|={7})( |$)", src, re.M):
         issues.append(Issue("merge-conflict", "error", doc.line_of(m.start()),
                             "unresolved merge conflict marker"))
+
+    for ch in doc.items:
+        miss = _verify.unverified_citations(doc, ch)
+        if miss:
+            issues.append(Issue("unverified-citation", "warning", ch.line_start,
+                                f"new citation{'s' if len(miss) > 1 else ''} {', '.join(sorted(miss))} "
+                                "without a refcheck: verify (record_verification) before accepting",
+                                ch.label if ch.ordinal else ""))
 
     for ch in doc.items + doc.nested:
         tag = ch.label if ch.ordinal else ""
