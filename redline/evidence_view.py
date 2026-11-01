@@ -267,7 +267,7 @@ B, I, D, R = "\x1b[1m", "\x1b[3m", "\x1b[2m", "\x1b[0m"
 FG = {"green": "\x1b[32m", "red": "\x1b[31m", "yellow": "\x1b[33m", "blue": "\x1b[34m",
       "magenta": "\x1b[35m", "cyan": "\x1b[36m"}
 STATUS_COLOR = {"VERIFIED": "green", "REFUTED": "red", "UNVERIFIED": "yellow"}
-ROLE_COLOR = {"supports": "green", "contradicts": "red", "context": "blue"}
+ROLE_COLOR = {"supports": "green", "contradicts": "red", "context": "blue", "reference": "yellow"}
 
 
 def _wrap(text: str, width: int, first: str = "", rest: str | None = None, style: str = "") -> list[str]:
@@ -309,7 +309,14 @@ def rich_text(e: Entry, width: int, block: list[str] | None = None) -> str:
             continue
         where = ", ".join(x for x in (s.section, f"p.{s.page}" if s.page else "") if x)
         role = FG[ROLE_COLOR.get(s.role, "yellow")]
-        out.append(f"{B}[{i}] {FG['magenta']}{s.bibkey}{R}  {role}{s.role}{R}" + (f"  {D}{where}{R}" if where else ""))
+        if s.role == "reference":
+            vcol = FG["green"] if s.verdict == "match" else FG["red"] if s.verdict == "mismatch" else FG["yellow"]
+            out.append(f"{B}[{i}] {FG['magenta']}{s.bibkey}{R} {D}reference list{R}  {D}{where}{R}")
+            out += _wrap(f"names «{s.mention}»; compared with {s.target}:", w, "    ")
+            out += _wrap(f"{s.verdict.upper()}: {s.why}", w, "    ", style=B + vcol)
+        else:
+            out.append(f"{B}[{i}] {FG['magenta']}{s.bibkey}{R}  {role}{s.role}{R}"
+                       + (f" {D}for {s.for_key}{R}" if s.for_key else "") + (f"  {D}{where}{R}" if where else ""))
         if s.quote:
             bar = f"  {role}│{R} "
             for ln in _wrap(s.quote, w - 4, "", style=I):

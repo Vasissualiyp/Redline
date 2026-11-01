@@ -8,6 +8,7 @@ from . import author, ops, select
 from . import compile as _compile
 from . import lint as _lint
 from . import sync as _sync
+from . import citechain as _citechain
 from . import evidence as _evidence
 from . import verify as _verify
 from . import zotero as _zotero
@@ -167,7 +168,7 @@ class Service:
         if unchecked_reason:
             return [], f"not refchecked ({unchecked_reason}): marked % UNVERIFIED"
         srcs = [_evidence.Source.of(x) for x in (evidence or [])]
-        have = {s.bibkey for s in srcs if s.quote}
+        have = {s.for_key or s.bibkey for s in srcs if s.quote}
         missing = [k for k in keys if k not in have]
         if missing:
             raise RedlineError(
@@ -183,11 +184,22 @@ class Service:
         if not self.zot().available():
             raise RedlineError("Zotero is not reachable, so the citation(s) cannot be refchecked and "
                                "nothing was written: start Zotero (or the zotero-remote tunnel) and call again")
-        srcs = [s for s in srcs if s.bibkey in keys]
+        for k in keys:  # a cited paper is never "missing": it is pulled into Zotero with its PDF
+            try:
+                self.zot().resolve(k)
+            except _zotero.ZoteroError as e:
+                raise RedlineError(f"nothing was written: {e}")
+        srcs = [s for s in srcs if (s.for_key or s.bibkey) in keys]
         self._check_sources(srcs)  # strict: a quote not on its page refuses the edit
-        lines = []
+        extra, chain_notes = self._chain(srcs, keys)
+        self._check_sources(extra, strict=False)
+        srcs = srcs + extra
+        lines = [f"  reference check: {n}" for n in chain_notes]
         for k in keys:
-            s = next(x for x in srcs if x.bibkey == k)
+            s = next(x for x in srcs if (x.for_key or x.bibkey) == k and x.quote)
+            if s.for_key:  # a secondary source: the chain check above is what ties it to k
+                lines.append(f"  {k} ← «{s.bibkey}» p.{s.page}, via its reference list")
+                continue
             title = ""
             try:
                 title = self.zot().get(f"/items/{s.item_key}").get("data", {}).get("title", "")
@@ -201,6 +213,9 @@ class Service:
                     raise RedlineError(f"{k}: the .bib entry is «{want}» but Zotero found «{title}»; "
                                        "the key points at the wrong paper. Fix the .bib entry first.")
             lines.append(f"  {k} → «{title or want}», quote found on p.{s.page}")
+        pulled = self.zot().pulled
+        if pulled:
+            lines.insert(0, f"  pulled into Zotero (with PDF): {', '.join(dict.fromkeys(pulled))}")
         return srcs, "refchecked:\n" + "\n".join(lines)
 
     def _edit(self, fn, reason: str, origin: str | None, evidence: list[dict] | None = None,
@@ -214,7 +229,7 @@ class Service:
             lib = self.library()
             used = {r.id for r in _verify.results(doc) if r.id}
             for iid, keys in need.items():
-                mine = [s for s in srcs if s.bibkey in keys]
+                mine = [s for s in srcs if (s.for_key or s.bibkey) in keys or (s.role == "reference" and s.target in keys)]
                 status = "UNVERIFIED" if unchecked_reason else "VERIFIED"
                 eid = lib.next_id(keys[0], used)
                 used.add(eid)
@@ -470,6 +485,7 @@ class Service:
     def zot(self) -> _zotero.Zotero:
         if getattr(self, "_zot", None) is None:
             self._zot = _zotero.Zotero(self._bibfile())
+            self._zot.paper = self.paper
         return self._zot
 
     def _bibfile(self) -> Path | None:
@@ -552,6 +568,63 @@ class Service:
             s.highlight = "none: " + why.splitlines()[0][:200]
         return True
 
+    def _chain(self, srcs: list, claim_keys: list[str], strict: bool = True) -> tuple[list, list[str]]:
+        """Reference-list entries for papers the quotes only mention.
+
+        A quote that names a paper ("Faucher-Giguere (2020)") backs a citation of
+        that paper only if the source's own reference list entry for it is the paper
+        the .bib key points at. Returns (extra role="reference" sources, notes);
+        with strict a mismatch (or an unresolvable for_key) raises."""
+        z = self.zot()
+        bib = z._bib_entries() if self._bibfile() else {}
+        extra, notes, problems = [], [], []
+        for s in srcs:
+            if s.code or not s.quote or s.role == "reference" or not s.att_key:
+                continue
+            ms = _citechain.mentions(s.quote)
+            targets = [s.for_key] if s.for_key else [k for k in claim_keys if k != s.bibkey and k in bib]
+            if not targets:
+                continue
+            try:
+                entries = _citechain.reference_entries(Path(z.pdf_path(s.att_key)))
+            except _zotero.ZoteroError as e:
+                notes.append(f"{s.bibkey}: {e}")
+                continue
+            for key in targets:
+                if key not in bib:
+                    if s.for_key:
+                        problems.append(f"{key}: not in the .bib")
+                    continue
+                meta = _citechain.meta_of(key, bib[key])
+                use = ms if s.for_key else [m for m in ms if _citechain.names(meta, m)]
+                if s.for_key and not ms:
+                    problems.append(f"{s.bibkey}'s quote does not name {key} (author and year), so it cannot vouch for it")
+                    continue
+                if not use:
+                    continue
+                found = [(m, e, *_citechain.compare(e, meta)) for m in use for e in _citechain.candidates(entries, m)]
+                if not entries:
+                    (problems if s.for_key else notes).append(
+                        f"{s.bibkey}: no reference list found in its PDF, so «{use[0].text}» could not be "
+                        f"matched to {key}")
+                elif not found:
+                    (problems if s.for_key else notes).append(
+                        f"{s.bibkey}: no reference-list entry for «{', '.join(m.text for m in use)}»")
+                elif not any(v == "match" for _, _, v, _ in found):
+                    shown = "; ".join(f"«{e.text[:90]}» ({why})" for _, e, _, why in found[:3])
+                    problems.append(f"{s.bibkey} names «{use[0].text}», but its reference list has {shown}, "
+                                    f"which is not {key} (.bib: «{meta.title[:80]}», vol. {meta.volume}, "
+                                    f"p. {meta.page}, DOI {meta.doi})")
+                for m, e, v, why in found[:4]:
+                    extra.append(_evidence.Source(bibkey=s.bibkey, role="reference", page=e.page, quote=e.text,
+                                                  section="References", item_key=s.item_key, att_key=s.att_key,
+                                                  mention=m.text, target=key, verdict=v, why=why))
+                    notes.append(f"{s.bibkey} p.{e.page} «{m.text}» → {key}: {v.upper()} ({why})")
+        if problems and strict:
+            raise RedlineError("nothing recorded: a quoted mention does not point at the cited paper\n"
+                               + "\n".join("  " + p for p in problems))
+        return extra, notes
+
     def _push(self, e: _evidence.Entry) -> None:
         """Highlights for the entry's quotes, then its note, in Zotero."""
         z = self.zot()
@@ -567,8 +640,9 @@ class Service:
                 try:
                     if not s.att_key:
                         s.item_key, s.att_key = z.resolve(s.bibkey, s.item_key)
-                    h = z.highlight(s.att_key, s.page or 1, _evidence.match_text(s.quote),
-                                    f"{e.id} {s.role}: {_short(e.claim, 120)}", self._tags(e.id),
+                    note = (f"{e.id} reference «{s.mention}» → {s.target}: {s.verdict}" if s.role == "reference"
+                            else f"{e.id} {s.role}: {_short(e.claim, 120)}")
+                    h = z.highlight(s.att_key, s.page or 1, _evidence.match_text(s.quote), note, self._tags(e.id),
                                     _evidence.COLORS.get(s.role, "yellow"))
                     s.ann_key, s.page_index, s.rects, s.highlight = h["key"], h["page_index"], h["rects"], "ok"
                 except _zotero.ZoteroError as ex:
@@ -600,6 +674,12 @@ class Service:
         if status == "UNVERIFIED" and not (reason or srcs):
             raise RedlineError("UNVERIFIED needs the reason")
         online = self._check_sources(srcs)
+        if online:
+            for k in dict.fromkeys(s.for_key for s in srcs if s.for_key):
+                try:
+                    self.zot().resolve(k)  # the cited paper itself is pulled if the library lacks it
+                except _zotero.ZoteroError as e:
+                    raise RedlineError(f"nothing recorded: {e}")
         doc = self.proj.doc()
         if request_id:
             hits = [r for r in _verify.requests(doc) if r.id == request_id or r.id.startswith(request_id)]
@@ -613,6 +693,12 @@ class Service:
                 raise RedlineError("pass request_id, or anchor= (exact text of the claim)")
             a, e = author.locate(doc, anchor, section)
             after, claim, at = doc.line_of(e - 1), doc.src[a:e], a
+        chain_notes: list[str] = []
+        if online and status != "UNVERIFIED":
+            keys = sorted(_verify.cite_keys(claim) | {s.for_key for s in srcs if s.for_key})
+            extra, chain_notes = self._chain(srcs, keys)
+            self._check_sources(extra, strict=False)
+            srcs = srcs + extra
         lib = self.library()
         used = {r.id for r in _verify.results(doc) if r.id}
         eid = lib.next_id(_evidence.id_prefix(srcs) if status != "UNVERIFIED" or srcs else "nosrc", used)
@@ -629,6 +715,8 @@ class Service:
             lib.save()
         bad = [f"{s.bibkey}: {s.highlight}" for s in srcs if s.highlight.startswith("none")]
         return (f"recorded {line.removeprefix('% ')}; Zotero: {entry.zotero}"
+                + (f"\n  pulled into Zotero: {', '.join(dict.fromkeys(self.zot().pulled))}" if self.zot().pulled else "")
+                + "".join(f"\n  reference check: {n}" for n in chain_notes)
                 + ("".join(f"\n  no highlight for {b}" for b in bad)))
 
     def evidence(self, eid: str) -> str:

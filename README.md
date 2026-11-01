@@ -200,6 +200,18 @@ prints a report, `redline evidence list|get ID|sync` work with the library, and
 | `f` | follow the nvim cursor on/off |
 | `r` / `q` | redraw / quit |
 
+## Citation chains and pulled papers
+
+When a quote only *names* a paper ("the more recent Faucher-Giguère (2020) model"),
+the evidence source carries `for_key` (the cited .bib key). Redline then finds the
+mention in that source's own reference list, highlights the entry in Zotero (orange),
+shows every same-author-same-year entry, and compares it with the `.bib` entry by DOI,
+arXiv id, journal volume and first page, or title. If none match, nothing is written:
+the old `Faucher-Giguere_2019` key (a cosmic-ray paper, MNRAS 488, 3716) fails against
+FIRE-3's entry "Faucher-Giguère C.-A., 2020, MNRAS, 493, 1614". Any cited paper that is
+not in Zotero is pulled in with its PDF (DOI, then arXiv, then an open-access copy);
+only a paywalled paper with no open copy stops the edit, and the message says so.
+
 ## Compiling by itself
 
 Once the paper has been quiet for 10 seconds after an edit (yours, or an agent's),

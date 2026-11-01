@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from redline import evidence, ops, verify
+from redline import citechain, evidence, ops, verify
 from redline.evidence_view import zotero_rects
 from redline.model import RedlineError
 from redline.parse import parse
@@ -19,19 +19,39 @@ PAGE = {  # what the fake PDFs say, per (attachment, page)
 }
 
 
+BIB = {  # the paper's .bib: abel02 (the paper a quote mentions) and two candidate keys
+    "abel02": {"title": "A source paper", "author": "Abel, Tom", "year": "2002"},
+    "fg20": {"title": "A cosmic UV/X-ray background model update", "author": "Faucher-Gigu{\\`e}re, Claude-Andr{\\'e}",
+             "year": "2020", "volume": "493", "pages": "1614--1632", "doi": "10.1093/mnras/staa302"},
+    "chan19": {"title": "Cosmic ray feedback in the FIRE simulations", "author": "Chan, T K and Kere{\\v s}, D",
+               "year": "2019", "volume": "488", "pages": "3716-3744", "doi": "10.1093/mnras/stz1895"},
+}
+REFS = [citechain.RefEntry("Faucher-Giguère C.-A., 2020, MNRAS, 493, 1614", 9, "Faucher-Giguère", "2020"),
+        citechain.RefEntry("Faucher-Giguère C.-A., Quataert E., 2012, MNRAS, 425, 605", 9, "Faucher-Giguère", "2012")]
+
+
 class FakeZotero:
     def __init__(self):
         self.up = True
         self.highlights, self.notes = {}, {}
+        self.pulled = []
 
     def available(self):
         return self.up
 
     def resolve(self, bibkey, item_key=""):
-        att = {"abel02": "ATT1", "bromm04": "ATT2"}.get(bibkey)
+        att = {"abel02": "ATT1", "bromm04": "ATT2", "fg20": "ATT3", "chan19": "ATT4"}.get(bibkey)
         if not att:
             raise ZoteroError(f"{bibkey}: not found in Zotero")
+        if bibkey in ("fg20", "chan19") and bibkey not in self.pulled and not item_key:
+            self.pulled.append(bibkey)  # in neither Zotero nor the library until pulled
         return "ITEM" + att[-1], att
+
+    def pdf_path(self, att):
+        return Path("/fake") / (att + ".pdf")
+
+    def _bib_entries(self):
+        return BIB
 
     def find_page(self, item, text):
         return next((p for (a, p), t in PAGE.items() if text in t), None)
@@ -295,3 +315,129 @@ def test_lint_flags_hand_added_unchecked_citations(svc):
     src = svc.proj.read().replace("minihaloes", "minihaloes\\added{ \\citep{bromm04}}", 1)
     issues = [i for i in lint.lint(parse(src)) if i.code == "unverified-citation"]
     assert issues and "bromm04" in issues[0].message
+
+
+# ---- citation chain: does the source's reference list point at the cited paper? ---------
+MENTION = {"bibkey": "abel02", "page": 2, "quote": "first stars form in minihaloes", "section": "§1"}
+
+
+@pytest.fixture
+def chain(svc, monkeypatch):
+    PAGE[("ATT1", 2)] = "We update the assumed UVB to the more recent Faucher-Giguere (2020) model."
+    PAGE[("ATT1", 9)] = "Faucher-Giguère C.-A., 2020, MNRAS, 493, 1614"
+    monkeypatch.setattr(citechain, "reference_entries", lambda pdf: REFS)
+    monkeypatch.setattr(svc, "_bibfile", lambda: Path("paper.bib"))
+    return svc
+
+
+def test_mentions_in_a_quote():
+    ms = citechain.mentions("we update to the more recent Faucher-Giguere (2020) model; see Hopkins et al. 2018a")
+    assert [(m.author, m.year, m.suffix) for m in ms] == [("Faucher-Giguere", "2020", ""), ("Hopkins", "2018", "a")]
+    assert citechain.mentions("as in (Springel & Hernquist 2003)")[0].text == "Springel & Hernquist 2003)"
+    assert citechain.mentions("In 2020 the model was updated") == []
+
+
+def test_reference_entries_split_and_compare():
+    text = ("Anglés-Alcázar D., Davé R., Faucher-Giguère C.-A., Özel F., Hopkins P. F.,\n2017a, MNRAS, 464, 2840\n"
+            "Anglés-Alcázar D., Faucher-Giguère C.-A., Kereš D., Hopkins P. F.,\nQuataert E., 2017b, MNRAS, 470, 4698\n"
+            "Faucher-Giguère C.-A., 2020, MNRAS, 493, 1614\nChan T. K., et al., 2019, MNRAS, 488, 3716\n")
+    ents = citechain.parse_entries([(9, text)])
+    assert [(e.author, e.year, e.suffix) for e in ents] == [("Anglés-Alcázar", "2017", "a"),
+                                                              ("Anglés-Alcázar", "2017", "b"),
+                                                              ("Faucher-Giguère", "2020", ""), ("Chan", "2019", "")]
+    fg = ents[2]
+    assert citechain.compare(fg, citechain.meta_of("fg20", BIB["fg20"]))[0] == "match"
+    verdict, why = citechain.compare(fg, citechain.meta_of("chan19", BIB["chan19"]))
+    assert verdict == "mismatch" and "vol. 493" in why and "488" in why
+
+
+def test_the_right_paper_is_recorded_with_its_reference_entry(chain):
+    out = chain.record_verification("VERIFIED", sources=[dict(MENTION, quote="Faucher-Giguere (2020) model",
+                                                              for_key="fg20")], anchor="Pop III stars form")
+    e = chain.library().get("fg20#1")
+    refs = [s for s in e.sources if s.role == "reference"]
+    assert len(refs) == 1 and refs[0].verdict == "match" and refs[0].target == "fg20" and refs[0].page == 9
+    assert "MNRAS, 493, 1614" in refs[0].quote and refs[0].ann_key  # highlighted in Zotero too
+    assert "reference check" in out and "MATCH" in out.upper()
+    assert chain._zot.highlights[refs[0].ann_key]["color"] == "orange"
+    assert "% VERIFIED fg20#1" in chain.proj.read()
+
+
+def test_the_wrong_paper_is_refused(chain):
+    before = chain.proj.read()
+    with pytest.raises(RedlineError, match="(?s)nothing recorded.*Faucher-Giguère C.-A., 2020, MNRAS, 493, 1614.*chan19"):
+        chain.record_verification("VERIFIED", sources=[dict(MENTION, quote="Faucher-Giguere (2020) model",
+                                                            for_key="chan19")], anchor="Pop III stars form")
+    assert chain.proj.read() == before and not chain.library().entries
+
+
+def test_for_key_needs_the_quote_to_name_the_paper(chain):
+    with pytest.raises(RedlineError, match="does not name fg20"):
+        chain.record_verification("VERIFIED", sources=[dict(MENTION, quote="We update the assumed UVB",
+                                                            for_key="fg20")], anchor="Pop III stars form")
+
+
+def test_cited_edit_with_a_secondary_source(chain):
+    out = chain.propose_insert(" (UVB: \\citep{fg20})", after="stars form in minihaloes",
+                               evidence=[dict(MENTION, quote="Faucher-Giguere (2020) model", for_key="fg20")])
+    t = chain.proj.read()
+    assert "\\citep{fg20}" in t and "% VERIFIED fg20#1" in t
+    assert "reference check" in out and "MATCH" in out.upper()
+    # the same text pointing at the wrong key never gets in
+    with pytest.raises(RedlineError, match="not fg20|not chan19"):
+        chain.propose_insert(" (also \\citep{chan19})", after="stars form in minihaloes",
+                             evidence=[dict(MENTION, quote="Faucher-Giguere (2020) model", for_key="chan19")])
+
+
+def test_a_cited_paper_missing_from_zotero_is_pulled(chain):
+    out = chain.propose_insert(" (UVB: \\citep{fg20})", after="stars form in minihaloes",
+                               evidence=[dict(MENTION, quote="Faucher-Giguere (2020) model", for_key="fg20")])
+    assert "pulled into Zotero (with PDF): fg20" in out
+
+
+# ---- Zotero.pull: DOI, then arXiv, then an open-access copy ----------------------------
+def _zot_with(monkeypatch, bib, fail=(), found_after=None):
+    from redline import zotero
+    z = zotero.Zotero()
+    z._bib = {"k": bib}
+    z.paper = "P"
+    calls = []
+
+    def cli(*args, stdin=None):
+        calls.append(args)
+        if args[0] == "add" and (args[1], args[2]) in fail:
+            raise ZoteroError("no PDF could be attached")
+        return {}
+    added = []
+    monkeypatch.setattr(z, "_cli", cli)
+    monkeypatch.setattr(z, "_search_item", lambda key: "ITEM1" if calls and any(c[0] == "add" for c in calls) else "")
+    monkeypatch.setattr(z, "_pdf_attachment", lambda item: "ATT")
+    monkeypatch.setattr(z, "_openalex", lambda title, year: [("10.1/oa", "https://oa.example/p.pdf")])
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    return z, calls
+
+
+def test_pull_uses_the_doi_first(monkeypatch):
+    z, calls = _zot_with(monkeypatch, {"doi": "10.1093/mnras/staa302", "title": "A title", "year": "2020"})
+    assert z.pull("k") == "ITEM1" and z.pulled == ["k"]
+    adds = [c for c in calls if c[0] == "add"]
+    assert adds[0][:3] == ("add", "doi", "10.1093/mnras/staa302") and "required" in adds[0]
+    assert "redline-pulled,redline:P" in adds[0] and len(adds) == 1
+
+
+def test_pull_falls_back_to_arxiv_then_open_access(monkeypatch):
+    z, calls = _zot_with(monkeypatch, {"doi": "10.1/paywalled", "eprint": "2001.01234", "title": "T", "year": "2020"},
+                         fail={("doi", "10.1/paywalled"), ("url", "https://arxiv.org/abs/2001.01234")})
+    assert z.pull("k") == "ITEM1"
+    assert [c[1:3] for c in calls if c[0] == "add"] == [("doi", "10.1/paywalled"),
+                                                         ("url", "https://arxiv.org/abs/2001.01234"),
+                                                         ("doi", "10.1/oa")]
+
+
+def test_pull_failure_names_every_attempt(monkeypatch):
+    z, _ = _zot_with(monkeypatch, {"doi": "10.1/x", "title": "T", "year": "2020"},
+                     fail={("doi", "10.1/x"), ("doi", "10.1/oa"), ("url", "https://oa.example/p.pdf")})
+    with pytest.raises(ZoteroError, match="(?s)could not pull.*10.1/x.*oa.example.*paywalled"):
+        z.pull("k")
+    with pytest.raises(ZoteroError, match="not in the .bib"):
+        z.pull("unknown")

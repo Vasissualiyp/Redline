@@ -35,7 +35,9 @@ reject every suggestion from their editor. Rules:
   PDF; the .bib key must also be the paper Zotero holds). Whenever you check anything in
   the paper (a claim, a number, a reference, "make sure the facts are solid") you record
   the outcome with record_verification, so a `% VERIFIED/REFUTED/UNVERIFIED id` line is
-  left; a check that leaves no such line did not happen. Only when the human explicitly
+  left; a check that leaves no such line did not happen. A paper named by author and year
+  in a quote is also checked against the source's reference list (for_key), and any paper
+  you cite that Zotero lacks is pulled with its PDF automatically. Only when the human explicitly
   says not to check, pass unchecked_reason (the result is marked % UNVERIFIED). lint()
   flags new citations that have no result line.
 - Pending changes are addressed by id (stable hash like a3f9c2) or label (C12;
@@ -131,7 +133,13 @@ def propose_replace(old_text: str, new_text: str, comment: str | None = None,
     evidence=[{bibkey, page, quote, section}] for every new key (exact sentence(s) from
     that paper's PDF that support the text); the quotes are matched on the page, the .bib
     key is compared with the Zotero item, and Redline adds the `% VERIFIED key#n` line
-    itself. Without evidence the call is refused and nothing is written. unchecked_reason
+    itself. Without evidence the call is refused and nothing is written. A cited paper that
+    is not in Zotero is pulled in automatically with its PDF (never report it as missing).
+    When the quote is from another paper that only NAMES the cited one ("... the more recent
+    Faucher-Giguere (2020) model"), give that source for_key="<the cited bibkey>": Redline
+    finds the named paper in the source's own reference list, highlights that entry too, and
+    refuses unless it is the same paper as the .bib entry (DOI / arXiv id / volume and page /
+    title), so a key pointing at the wrong paper cannot pass. unchecked_reason
     is only for when the human explicitly said not to check (the result is then marked
     % UNVERIFIED)."""
     return _safe(svc().propose_replace, old_text, new_text, comment, section, occurrence,
@@ -311,7 +319,7 @@ def record_verification(status: str, sources: list[dict[str, Any]] | None = None
     request when request_id is given, else after the line where `anchor` ends), puts
     the evidence in the library, highlights each quote in its Zotero PDF and files a
     note in Zotero.
-    sources: [{bibkey, page, quote, section?, role?}]: quote = exact sentence(s) copied
+    sources: [{bibkey, page, quote, section?, role?, for_key?}]: quote = exact sentence(s) copied
     from the PDF, page = 1-based PDF page, section = "§3.1"/"Abstract"/"Table 2",
     role = supports (default) | contradicts | context. Quotes are matched on the page
     first; a quote that is not found is refused (with the closest page text) and

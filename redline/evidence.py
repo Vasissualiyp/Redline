@@ -19,8 +19,8 @@ from pathlib import Path
 from .model import RedlineError
 from .verify import ID_RE
 
-ROLES = ("supports", "contradicts", "context")
-COLORS = {"supports": "green", "contradicts": "red", "context": "blue"}  # zotero-refcheck's scheme
+ROLES = ("supports", "contradicts", "context", "reference")
+COLORS = {"supports": "green", "contradicts": "red", "context": "blue", "reference": "orange"}  # zotero-refcheck's scheme
 
 
 @dataclass
@@ -37,6 +37,11 @@ class Source:
     rects: list = field(default_factory=list)  # Zotero rects: [x1, y1, x2, y2], origin bottom-left
     highlight: str = ""              # "", "ok", "pending", or "none: <why>"
     code: dict | None = None         # code checks: {path, line, value}
+    for_key: str = ""                # secondary source: the cited .bib key this quote vouches for
+    mention: str = ""                # role "reference": how the quote names the paper ("Smith (2020)")
+    target: str = ""                 # role "reference": the .bib key the reference entry is compared with
+    verdict: str = ""                # role "reference": match | mismatch | unclear
+    why: str = ""
 
     @classmethod
     def of(cls, d: dict) -> "Source":
@@ -68,9 +73,13 @@ class Entry:
     @property
     def also(self) -> list[str]:
         keys = []
+        if not self.sources:
+            return keys
+        first = self.sources[0].for_key or self.sources[0].bibkey
         for s in self.sources[1:]:
-            if s.bibkey and s.bibkey != self.sources[0].bibkey and s.bibkey not in keys:
-                keys.append(s.bibkey)
+            k = s.for_key or s.bibkey
+            if s.role != "reference" and k and k != first and k not in keys:
+                keys.append(k)
         return keys
 
     def text(self) -> str:
@@ -90,7 +99,12 @@ class Entry:
                     out.append(f"    {s.code['value']}")
                 continue
             where = ", ".join(x for x in (s.section, f"p.{s.page}" if s.page else "") if x)
-            out.append(f"[{i}] {s.bibkey} ({s.role})" + (f" — {where}" if where else ""))
+            if s.role == "reference":
+                out.append(f"[{i}] {s.bibkey} reference list — {where}: names «{s.mention}», compared with "
+                           f"{s.target}: {s.verdict.upper()} ({s.why})")
+            else:
+                out.append(f"[{i}] {s.bibkey} ({s.role})" + (f" for {s.for_key}" if s.for_key else "")
+                           + (f" — {where}" if where else ""))
             if s.quote:
                 out.append(f"    “{s.quote}”")
             if s.highlight and s.highlight != "ok":
@@ -141,8 +155,8 @@ def id_prefix(sources: list[Source]) -> str:
     for s in sources:
         if s.code:
             return "code"
-        if s.bibkey:
-            return s.bibkey
+        if s.for_key or s.bibkey:
+            return s.for_key or s.bibkey
     return "nosrc"
 
 
@@ -167,7 +181,13 @@ def note_html(e: Entry, paper: str) -> str:
         where = ", ".join(x for x in (s.section, f"p.{s.page}" if s.page else "") if x)
         link = (f' <a href="zotero://open-pdf/library/items/{s.att_key}?annotation={s.ann_key}">open highlight</a>'
                 if s.att_key and s.ann_key else "")
-        parts.append(f"<p><b>{esc(s.bibkey)}</b> ({esc(s.role)}){' — ' + esc(where) if where else ''}{link}</p>")
+        if s.role == "reference":
+            parts.append(f"<p><b>{esc(s.bibkey)}</b> reference list{' — ' + esc(where) if where else ''}: names "
+                         f"«{esc(s.mention)}»; compared with <b>{esc(s.target)}</b>: <b>{esc(s.verdict.upper())}</b>"
+                         f" ({esc(s.why)}){link}</p>")
+        else:
+            parts.append(f"<p><b>{esc(s.bibkey)}</b> ({esc(s.role)}"
+                         f"{', for ' + esc(s.for_key) if s.for_key else ''}){' — ' + esc(where) if where else ''}{link}</p>")
         if s.quote:
             parts.append(f"<blockquote>{esc(s.quote)}</blockquote>")
     data = {k: v for k, v in e.as_dict().items() if k not in ("note_key", "zotero")}

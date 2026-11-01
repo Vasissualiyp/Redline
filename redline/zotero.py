@@ -96,6 +96,8 @@ class Zotero:
         self.timeout = timeout
         self._server_id = ""
         self._resolved: dict[str, tuple[str, str]] = {}
+        self.paper = ""
+        self.pulled: list[str] = []  # keys added to the library during this run
         self._bib: dict[str, dict[str, str]] | None = None
 
     # ---- transport --------------------------------------------------------------
@@ -183,7 +185,8 @@ class Zotero:
         self._resolved[bibkey] = (item_key, att)
         return item_key, att
 
-    def _find_item(self, bibkey: str) -> str:
+    def _search_item(self, bibkey: str) -> str:
+        """Key of the library item for a .bib key (citekey, DOI, arXiv id, title), or ""."""
         hits = self._cli("search", "--mode", "citekey", bibkey, "--detail", "keys_only").get("items") or []
         if hits:
             return hits[0]["key"]
@@ -205,7 +208,84 @@ class Zotero:
                            key=lambda it: difflib.SequenceMatcher(None, _norm(it.get("title", "")), _norm(title)).ratio())
                 if best and difflib.SequenceMatcher(None, _norm(best.get("title", "")), _norm(title)).ratio() > 0.85:
                     return best["key"]
-        raise ZoteroError(f"{bibkey}: not found in Zotero (no citekey, DOI, arXiv id or title match)")
+        return ""
+
+    def _find_item(self, bibkey: str) -> str:
+        key = self._search_item(bibkey)
+        return key or self.pull(bibkey)
+
+    # ---- pulling papers that are not in the library yet -------------------------------
+    def _openalex(self, title: str, year: str) -> list[tuple[str, str]]:
+        """(doi, open-access url) of the best OpenAlex matches for a title."""
+        if not title:
+            return []
+        import difflib
+        q = urllib.parse.urlencode({"search": title, "per-page": 3,
+                                    **({"filter": f"publication_year:{year}"} if year else {})})
+        try:
+            with urllib.request.urlopen(f"https://api.openalex.org/works?{q}", timeout=20) as r:
+                works = json.loads(r.read()).get("results", [])
+        except (OSError, ValueError, urllib.error.URLError):
+            return []
+        out = []
+        for w in works:
+            if difflib.SequenceMatcher(None, _norm(w.get("title") or ""), _norm(title)).ratio() < 0.85:
+                continue
+            doi = (w.get("doi") or "").removeprefix("https://doi.org/")
+            oa = ((w.get("best_oa_location") or {}).get("pdf_url")
+                  or (w.get("open_access") or {}).get("oa_url") or "")
+            out.append((doi, oa))
+        return out
+
+    def pull(self, bibkey: str) -> str:
+        """Add a paper that is not in the library, with its PDF, and return its item key.
+
+        Tries the .bib DOI, then its arXiv id, then the DOI / open-access copy that
+        OpenAlex finds for the title. Raises, naming every attempt, only when the
+        paper or its PDF cannot be obtained at all (paywalled and no open copy)."""
+        f = self._bib_entries().get(bibkey, {})
+        if not f:
+            raise ZoteroError(f"{bibkey}: not in the .bib, so there is nothing to pull; add its entry first")
+        ids = []
+        if f.get("doi"):
+            ids.append(("doi", f["doi"].strip()))
+        if f.get("eprint"):
+            ids.append(("url", "https://arxiv.org/abs/" + re.sub(r"^arxiv:\s*", "", f["eprint"], flags=re.I).strip()))
+        for doi, oa in self._openalex(plain(f.get("title", "")), f.get("year", "")):
+            if doi and ("doi", doi) not in ids:
+                ids.append(("doi", doi))
+            if oa:
+                ids.append(("url", oa))
+        if not ids:
+            raise ZoteroError(f"{bibkey}: no DOI, arXiv id or findable title in the .bib to pull it by")
+        tried = []
+        tags = ",".join(["redline-pulled"] + ([f"redline:{self.paper}"] if getattr(self, "paper", "") else []))
+        for kind, arg in ids:
+            try:
+                self._cli("add", kind, arg, "--attach-mode", "required", "--tags", tags)
+            except ZoteroError as e:
+                tried.append(f"{kind} {arg}: {str(e).splitlines()[0][:140]}")
+                continue
+            item = ""
+            for _ in range(4):  # the library may take a moment to show the new item
+                item = self._search_item(bibkey)
+                if item:
+                    break
+                import time
+                time.sleep(1)
+            if not item:
+                tried.append(f"{kind} {arg}: added, but not found again by its metadata")
+                continue
+            try:
+                self._pdf_attachment(item)
+            except ZoteroError as e:
+                tried.append(f"{kind} {arg}: {e}")
+                continue
+            self.pulled.append(bibkey)
+            return item
+        raise ZoteroError(f"{bibkey}: could not pull it into Zotero with a PDF ("
+                          + "; ".join(tried) + "). Likely paywalled with no open copy: put its PDF in Zotero by "
+                          "hand (zotero-cli attach ITEM --file ...), or say explicitly to leave it unchecked")
 
     def _pdf_attachment(self, item_key: str) -> str:
         data = self.get(f"/items/{item_key}")
