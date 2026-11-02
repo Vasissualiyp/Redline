@@ -458,6 +458,7 @@ local REVIEW_KEYS = {
   { "n", "e", M.edit_current, "edit the suggested text" },
   { "n", "C", M.edit_comment, "edit/add the explaining comment" },
   { "n", "d", M.discuss, "ask the agent about this change" },
+  { "n", "I", function() require("redline.message").open() end, "message the agent: edit / chat / RAW edit" },
   { "n", "N", M.send_notes, "send all %N notes to the agent (one message)" },
   { "x", "d", M.send_visual, "ask the agent about the selection" },
   { "n", "p", function() preview.show_cursor(core.state().root, true) end, "show in PDF pane" },
@@ -600,6 +601,7 @@ function M.buffer_maps(buf)
   map("x", p .. "x", function() M.resolve_range("reject", true) end, "reject selection")
   map("n", p .. "n", function() M.mark_current("N") end, "keep pending with a note")
   map("n", p .. "d", M.discuss, "ask the agent")
+  map("n", p .. "i", function() require("redline.message").open() end, "message the agent: edit / chat / RAW edit")
   map("n", p .. "N", M.send_notes, "send all %N notes to the agent")
   map("x", p .. "d", M.send_visual, "ask the agent about the selection")
   map("n", p .. "l", function() require("redline.picker").pick() end, "list changes")

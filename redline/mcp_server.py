@@ -48,6 +48,17 @@ reject every suggestion from their editor. Rules:
   (\item and \section stay outside the markup automatically), relocated text through
   propose_move. plain_edit is only for equations/environments and tiny typo fixes;
   it refuses prose changes.
+- Message modes. The human's nvim message window prefixes messages with their mode:
+  [redline:edit] (default): change the paper ONLY through the tracked tools above.
+  [redline:chat]: conversation only, no edits at all. [redline:RAW]: that message
+  authorises untracked edits of the .tex (plain_edit force=true or file tools), nothing
+  beyond it. Without RAW, decline every request to change the paper outside the tracked
+  tools (including plain_edit and generic file writes) and say the human can use the
+  RAW mode of the message window. If a requested change cannot be written as tracked
+  markup (moving or resizing a figure, table layout, preamble, ...), FIRST thing, before
+  any edit, tell the human which part needs a raw edit and ask them to reply RAW; the
+  human may be away, so do the trackable parts meanwhile and leave the rest. A chat reply
+  of RAW to such a request authorises a raw edit of exactly those parts, once.
 - `% VERIFY <refcheck|code|any>: «claim»` lines are verification requests from the
   human: verification_requests() lists them; answer each with record_verification()
   (structured sources: exact quote + page per bibkey). Results in the paper are short
@@ -197,8 +208,11 @@ def propose_move(text: str, after: str | None = None, before: str | None = None,
 def plain_edit(old_text: str, new_text: str, section: str | None = None,
                occurrence: int | None = None, reason: str | None = None, force: bool = False,
                ctx: Context | None = None) -> str:
-    """UNTRACKED edit, the human does not see it as a change. Only for equations and
-    environments, a tiny typo fix the human asked for, or repairing broken markup.
+    """UNTRACKED edit, the human does not see it as a change. RAW EDIT: only when the
+    human authorised it, i.e. the message is [redline:RAW] or they replied RAW to your
+    request for one; otherwise decline and point to the RAW mode of the message window.
+    Even then, only for equations and environments, a tiny typo fix, repairing broken
+    markup, or the parts you asked RAW for.
     Changing more than a few words of prose is refused: use propose_replace /
     propose_insert / propose_delete / propose_move (they handle \item and headings).
     force=true with reason= makes an exception and leaves a \chcomment explaining it."""

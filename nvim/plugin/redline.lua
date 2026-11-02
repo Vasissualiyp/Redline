@@ -23,6 +23,7 @@ local subcommands = {
   verify = function() require("redline.verify").request(false) end,
   verifyall = function() require("redline.verify").send_all() end,
   evidence = function() require("redline.verify").evidence() end,
+  msg = function(args) require("redline.message").open({ mode = args[2] }) end,
   agent = function() require("redline.agent").pick() end,
   autocompile = function() require("redline.autocompile").toggle() end,
   sendnotes = function() require("redline.review").send_notes() end,
@@ -50,6 +51,9 @@ end, {
   complete = function(arg, line)
     if line:match("^%S+%s+lint%s") then
       return { "fix" }
+    end
+    if line:match("^%S+%s+msg%s") then
+      return { "edit", "chat", "RAW" }
     end
     if line:match("^%S+%s+layout%s") then
       return vim.tbl_map(function(p) return p.name end, require("redline.layout").presets())

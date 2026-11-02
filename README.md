@@ -58,6 +58,7 @@ gitsigns' `]c` is restored when you leave.
 | `y` / `X` | mark `%Y` / `%X` for later bulk application |
 | `e` / `C` | edit the suggested text / its comment in place |
 | `d` (also visual) | ask the agent about this change / the selection |
+| `I` | **message window** to the agent (`<leader>ji`, `:Redline msg [edit\|chat\|RAW]`); `<Tab>` cycles the mode, `<C-s>`/`<CR>` sends. See below |
 | `N` | send all `%N` notes to the agent in one message (`:Redline sendnotes`); a revise clears the `%N` so the change shows up as unrated again |
 | `A` `R` `M` (also visual) | accept / reject / apply markers in the section, heading or selection |
 | `K` / `gl` | details / list of all changes (Telescope) |
@@ -92,6 +93,22 @@ To put the status in your statusline, use `require('redline').status()`
 (e.g. `REVIEW C12/49 · §3.2 · 2 marked`).
 
 Undo is ordinary vim undo. Accepting and rejecting are applied as buffer edits.
+
+## Messaging the agent
+
+`I` opens a small window with three modes (`<Tab>` switches, the border colour shows which):
+
+| mode | what the agent may do |
+|---|---|
+| **edit** (default) | change the paper through the redline tools only (tracked markup) |
+| **chat** | talk only; no edits |
+| **RAW** (red, asks for confirmation) | change the `.tex` directly, untracked, for that message only |
+
+Outside RAW the agent declines edits that bypass redline and points you to RAW mode. If an
+edit cannot be tracked (moving or resizing a figure, table layout, ...) it says so in its
+first line, before editing anything, and asks you to reply `RAW`; it does the trackable
+parts meanwhile. Replying `RAW` in the agent pane allows a raw edit of exactly those parts.
+The rules are in the MCP server instructions, so they hold for any agent.
 
 ## Quitting
 
