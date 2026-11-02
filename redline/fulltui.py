@@ -23,9 +23,9 @@ from textual.widgets import ContentSwitcher
 from textual.screen import ModalScreen
 from textual.strip import Strip
 from textual.widget import Widget
-from textual.widgets import DataTable, Footer, Header, Input, Label, OptionList, RichLog, Static
+from textual.widgets import Button, DataTable, Footer, Header, Input, Label, OptionList, RichLog, Select, Static, Switch
 
-from . import kittygfx, overleaf, registry, thumb
+from . import categories, config, kittygfx, overleaf, registry, thumb
 from .model import RedlineError
 
 SYNC_STYLE = {"in sync": "green", "local edits": "yellow", "no base": "red"}
@@ -319,6 +319,92 @@ class NewPaper(ModalScreen):
         self.app.push_screen(Confirm(f"Create a NEW Overleaf project called [b]{escape(name)}[/]?"), go)
 
 
+class EditPaper(ModalScreen):
+    """The paper's metadata: its category, strict refchecks, code directory, notes, Overleaf project."""
+
+    BINDINGS = [Binding("escape", "dismiss(None)", "Cancel"), Binding("ctrl+s", "save", "Save")]
+    CSS = """
+    EditPaper { align: center middle; }
+    #ebox { width: 88; height: auto; max-height: 90%; border: round $accent; background: $surface; padding: 1 2; }
+    #ebox Label { margin-top: 1; }
+    #ebox Horizontal { height: auto; margin-top: 1; }
+    #ebox Button { margin-right: 2; }
+    """
+
+    def __init__(self, info: registry.Info):
+        super().__init__()
+        self.info = info
+        self.cfg = config.load(info.path)
+
+    def compose(self) -> ComposeResult:
+        cats = categories.paths()
+        if self.cfg.category and self.cfg.category not in cats:
+            cats.append(self.cfg.category)
+        with Vertical(id="ebox"):
+            yield Label(f"[b]Edit[/] {escape(self.info.name)}\n[dim]{escape(str(self.info.path))}[/]")
+            yield Label("Category")
+            yield Select([("(none)", ""), *[(c, c) for c in cats]], value=self.cfg.category, allow_blank=False, id="e-cat")
+            yield Label("Strict refchecks: every new citation must be verified against Zotero")
+            yield Switch(value=self.cfg.enforce_verification, id="e-verify")
+            yield Label("Code directory (analysis code; relative paths are inside the paper)")
+            yield Input(value=self.cfg.code_dir and str(self._rel(self.cfg.code_dir)), id="e-code")
+            yield Label("Notes")
+            yield Input(value=self.cfg.notes, id="e-notes")
+            yield Label("Overleaf project name (empty = the folder name; changing it re-points syncing)")
+            yield Input(value=self.cfg.overleaf_project, placeholder=self.info.path.name, id="e-ol")
+            with Horizontal():
+                yield Button("Save (ctrl+s)", variant="primary", id="e-save")
+                yield Button("Cancel (esc)", id="e-cancel")
+
+    def _rel(self, d: str) -> str:
+        try:
+            return str(Path(d).relative_to(self.info.path))
+        except ValueError:
+            return d
+
+    def on_button_pressed(self, ev: Button.Pressed) -> None:
+        self.action_save() if ev.button.id == "e-save" else self.dismiss(None)
+
+    def action_save(self) -> None:
+        q = self.query_one
+        self.dismiss({"category": q("#e-cat", Select).value or "", "enforce_verification": q("#e-verify", Switch).value,
+                      "code_dir": q("#e-code", Input).value.strip(), "notes": q("#e-notes", Input).value.strip(),
+                      "overleaf_project": q("#e-ol", Input).value.strip()})
+
+
+class CategoryForm(ModalScreen):
+    """A category's path (\"Papers/Pop III\": nested with /) and colour."""
+
+    BINDINGS = [Binding("escape", "dismiss(None)", "Cancel")]
+    CSS = """
+    CategoryForm { align: center middle; }
+    #cbox { width: 70; height: auto; border: round $accent; background: $surface; padding: 1 2; }
+    #cbox Label { margin-top: 1; }
+    """
+
+    def __init__(self, title: str, name: str = "", color: str = ""):
+        super().__init__()
+        self.title_text, self.name0, self.color0 = title, name, color
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="cbox"):
+            yield Label(f"[b]{self.title_text}[/]")
+            yield Label("Name (use / to nest, e.g. Papers/Pop III)")
+            yield Input(value=self.name0, id="c-name")
+            yield Label("Colour (a name like cyan or orange3, or #rrggbb)")
+            yield Input(value=self.color0, id="c-color")
+            yield Label("", id="c-err")
+
+    def on_input_submitted(self, ev: Input.Submitted) -> None:
+        name = categories.clean(self.query_one("#c-name", Input).value)
+        color = self.query_one("#c-color", Input).value.strip()
+        if not name:
+            return self.query_one("#c-err", Label).update("[red]a name is needed[/]")
+        if color and not categories.valid_color(color):
+            return self.query_one("#c-err", Label).update(f"[red]{escape(color)} is not a colour[/]")
+        self.dismiss((name, color))
+
+
 class Say(ModalScreen):
     """One line of text for the agent."""
 
@@ -365,6 +451,11 @@ class Full(App):
         Binding("a", "accept", "Accept"),
         Binding("x", "reject", "Reject"),
         Binding("A", "accept_all", "Accept ALL"),
+        Binding("e", "edit", "Edit"),
+        Binding("C", "new_category", "New category"),
+        Binding("J", "move_down", "Move down"),
+        Binding("K", "move_up", "Move up"),
+        Binding("D", "delete_category", "Delete category"),
         Binding("d", "discuss", "Ask AI"),
         Binding("t", "chat", "Talk to AI"),
         Binding("v", "toggle_view", "Page/Text"),
@@ -378,7 +469,7 @@ class Full(App):
     CSS = """
     #papers, #changes { width: 3fr; }
     .side { width: 2fr; border-left: solid $primary; padding: 0 1; }
-    #detail { height: 8; }
+    #detail { height: 11; }
     #cdetail { height: 12; overflow-y: auto; }
     #log { height: 7; border-top: solid $primary; }
     #search { display: none; dock: bottom; }
@@ -387,7 +478,7 @@ class Full(App):
     #changes-view.textmode #changes { width: 2fr; }
     #changes-view.textmode .side { width: 3fr; }
     """
-    PAPER_ONLY = {"open", "pull", "push"}
+    PAPER_ONLY = {"open", "pull", "push", "new_category", "move_down", "move_up", "delete_category"}
     CHANGES_ONLY = {"accept", "reject", "discuss", "undo", "toggle_view"}
 
     def __init__(self) -> None:
@@ -410,6 +501,7 @@ class Full(App):
         self.started: dict[str, float] = {}
         self.placeholders: dict[str, str] = {}  # papers being created or pulled: name -> label
         self.frame = 0
+        self.collapsed: set[str] = set()
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -458,6 +550,10 @@ class Full(App):
     def action_enter(self) -> None:  # l
         if self.level != "papers":
             return
+        cat = self.cat_path()
+        if cat is not None:  # l opens a category
+            self.collapsed.discard(cat)
+            return self.fill()
         it = self.selected()
         if not it or it.error:
             return self.say("this paper cannot be read" + (f": {it.error}" if it and it.error else ""))
@@ -484,6 +580,21 @@ class Full(App):
             pass
 
     def action_back(self) -> None:  # h
+        if self.level == "papers":
+            cat = self.cat_path()
+            if cat is not None:
+                if cat not in self.collapsed and cat != categories.NONE and (
+                        self.cat_nodes.get(cat) and (self.cat_nodes[cat].papers or self.cat_nodes[cat].children)):
+                    self.collapsed.add(cat)  # h closes an open category ...
+                    return self.fill()
+                parent = cat.rsplit("/", 1)[0] if "/" in cat else ""
+                if parent:  # ... and from a closed one goes up
+                    self.keep_cursor(f"cat:{parent}")
+                return
+            it = self.selected()
+            if it:  # from a paper to its category
+                self.keep_cursor("cat:" + (categories.clean(it.category) or categories.NONE))
+            return
         if self.level == "changes":
             self.level = "papers"
             self.query_one(ContentSwitcher).current = "papers-view"
@@ -614,20 +725,54 @@ class Full(App):
         keep = self.current_path()
         t.clear()
         self.rows = {}
+        q = self.queries["papers"]
         for name, label in self.placeholders.items():  # a paper being created or pulled shows at once
-            if self.matches(self.queries["papers"], name):
+            if self.matches(q, name):
                 t.add_row(f"[b yellow]{escape(name)}[/]", "", "", "", "", "", f"[b yellow]{label}[/]", key=f"ph:{name}")
-        for it in self.all_papers:
-            if not self.matches(self.queries["papers"], f"{it.name} {it.sync} {it.path}"):
-                continue
-            self.rows[str(it.path)] = it
-            sync = f"[{SYNC_STYLE.get(it.sync, 'red')}]{it.sync or 'error'}[/]"
-            t.add_row(escape(it.name), _cell(it.pending), _cell(it.unrated, warn=True), sync,
-                      "[green]running[/]" if it.running else "[dim]-[/]", registry.ago(it.active), "",
-                      key=str(it.path))
-        if keep and keep in self.rows:
-            t.move_cursor(row=t.get_row_index(keep))
+        shown = [it for it in self.all_papers if self.matches(q, f"{it.name} {it.sync} {it.path} {it.category}")]
+        tree = categories.build(shown)
+        self.cat_nodes = {}
+        # no categories anywhere: a plain list, without an "Uncategorized" heading
+        flat = not categories.paths() and not any(i.category for i in self.all_papers)
+        for kind, obj, depth, node in categories.flatten(tree, self.collapsed, show_all=bool(q)):
+            if flat:
+                depth = max(0, depth - 1)
+                if kind == "cat":
+                    continue
+            if kind == "cat":
+                self.cat_nodes[obj.path] = obj
+                members = categories.subtree_papers(obj)
+                if q and not members:
+                    continue
+                arrow = "▸" if obj.path in self.collapsed and not q else "▾"
+                pend = sum(i.pending or 0 for i in members)
+                unr = sum(i.unrated or 0 for i in members)
+                t.add_row(f"{'  ' * depth}[b {obj.color}]{arrow} {escape(obj.name)}[/] [dim]({len(members)})[/]",
+                          f"[dim]{pend}[/]" if members else "", _cell(unr, warn=True) if members else "", "", "", "", "",
+                          key=f"cat:{obj.path}")
+            else:
+                it = obj
+                self.rows[str(it.path)] = it
+                sync = f"[{SYNC_STYLE.get(it.sync, 'red')}]{it.sync or 'error'}[/]"
+                strict = "" if it.strict else " [dim red](refcheck off)[/]"
+                t.add_row(f"{'  ' * depth}[{node.color}]·[/] {escape(it.name)}{strict}", _cell(it.pending),
+                          _cell(it.unrated, warn=True), sync,
+                          "[green]running[/]" if it.running else "[dim]-[/]", registry.ago(it.active), "",
+                          key=str(it.path))
+        if keep and keep in self.rows or keep and keep.startswith("cat:"):
+            with contextlib.suppress(Exception):
+                t.move_cursor(row=t.get_row_index(keep))
         self.show_detail()
+
+    def cat_path(self) -> str | None:
+        """The category under the cursor (a category row), else None."""
+        cur = self.current_path()
+        return cur[4:] if cur and cur.startswith("cat:") else None
+
+    def keep_cursor(self, key: str) -> None:
+        with contextlib.suppress(Exception):
+            t = self.query_one("#papers", VimTable)
+            t.move_cursor(row=t.get_row_index(key))
 
     def current_path(self) -> str | None:
         t = self.query_one("#papers", DataTable)
@@ -649,6 +794,11 @@ class Full(App):
             self.show_change()
 
     def on_data_table_row_selected(self, ev: DataTable.RowSelected) -> None:  # enter
+        cat = self.cat_path() if ev.data_table.id == "papers" else None
+        if cat is not None:  # enter folds/unfolds a category
+            self.collapsed.symmetric_difference_update({cat})
+            self.fill()
+            return self.keep_cursor(f"cat:{cat}")
         self.action_open()
 
     def show_detail(self) -> None:
@@ -656,6 +806,14 @@ class Full(App):
         side = self.query_one("#detail", Static)
         page = self.query_one("#page", PagePreview)
         cur = self.current_path()
+        if cur and cur.startswith("cat:"):
+            page.clear()
+            node = self.cat_nodes.get(cur[4:])
+            members = categories.subtree_papers(node) if node else []
+            side.update(f"[b {node.color if node else 'white'}]{escape(cur[4:])}[/]\n\n{len(members)} paper(s), "
+                        f"{sum(i.pending or 0 for i in members)} pending changes\n\n"
+                        "[dim]e edit   C new   J/K move   D delete   enter/l/h open or close[/]")
+            return
         if cur and cur.startswith("ph:"):
             page.clear()
             return side.update(f"[b yellow]{escape(cur[3:])}[/]\n\n{self.placeholders.get(cur[3:], '')} ...\n"
@@ -669,10 +827,13 @@ class Full(App):
         if it.error:
             lines.append(f"[red]{escape(it.error)}[/]")
         else:
-            lines += [f"pending changes   {it.pending}", f"without a marker  {it.unrated}",
+            lines += [f"category          {it.category or '-'}", f"refcheck          {'strict' if it.strict else 'off'}",
+                      f"pending changes   {it.pending}", f"without a marker  {it.unrated}",
                       f"Overleaf          {it.sync}", f"tmux session      {registry.session_name(it.path)}"
                       + (" (running)" if it.running else ""), f"last edit         {registry.ago(it.active)}"
                       + "   [dim]l: review its changes[/]"]
+        if it.notes:
+            lines += ["", f"[i]{escape(it.notes)}[/]"]
         side.update("\n".join(lines))
         pdf = None
         if not it.error:
@@ -923,6 +1084,119 @@ class Full(App):
         self.call_from_thread(self.load_changes)
 
     # ---- talking to the agent --------------------------------------------------------
+    # ---- categories and the edit screen ------------------------------------------
+    def action_edit(self) -> None:
+        cat = self.cat_path() if self.level == "papers" else None
+        if cat is not None:
+            if cat == categories.NONE:
+                return self.say(f"{categories.NONE} is the built-in group of papers without a category")
+            node = self.cat_nodes.get(cat)
+
+            def done(res) -> None:
+                if res:
+                    self.rename_category(cat, *res)
+            return self.push_screen(CategoryForm("Edit category", cat, node.color if node else ""), done)
+        it = self.selected() if self.level == "papers" else next(
+            (i for i in self.all_papers if i.path == self.paper), None)
+        if not it:
+            return
+
+        def saved(res) -> None:
+            if res:
+                self.save_paper(it, res)
+        self.push_screen(EditPaper(it), saved)
+
+    def save_paper(self, it: registry.Info, res: dict) -> None:
+        cfg = config.load(it.path)
+        try:
+            for key, val in res.items():
+                if key == "code_dir" and not val:
+                    continue
+                if val != getattr(cfg, key) or key == "code_dir" and val != cfg.code_dir:
+                    if key == "code_dir":
+                        want = str((it.path / val).resolve()) if not Path(val).is_absolute() else val
+                        if want == cfg.code_dir:
+                            continue
+                    config.set_key(it.path, key, val)
+            if not res["enforce_verification"] and cfg.enforce_verification:
+                self.say(f"refcheck is now OFF for {it.name}: citations need no evidence")
+            self.say(f"saved {it.name}")
+        except Exception as e:
+            self.say(f"cannot save: {e}")
+        self.action_refresh()
+
+    def action_new_category(self) -> None:
+        cat = self.cat_path()
+        prefix = (cat + "/") if cat and cat != categories.NONE else ""
+
+        def done(res) -> None:
+            if res:
+                try:
+                    name = categories.add(*res)
+                    self.say(f"category {name} added")
+                    self.fill()
+                    self.keep_cursor(f"cat:{name}")
+                except RedlineError as e:
+                    self.say(str(e))
+        self.push_screen(CategoryForm("New category", prefix), done)
+
+    def rename_category(self, old: str, new: str, color: str) -> None:
+        try:
+            if color:
+                categories.set_color(old, color)
+            for was in categories.rename(old, new):
+                now = new + was[len(old):]
+                for p in registry.scan():
+                    if categories.clean(config.load(p).category) == was:
+                        config.set_key(p, "category", now)
+            self.say(f"category {old} -> {new}" if new != old else f"category {old} updated")
+        except RedlineError as e:
+            self.say(str(e))
+        self.action_refresh()
+
+    def action_delete_category(self) -> None:
+        cat = self.cat_path()
+        if not cat or cat == categories.NONE:
+            return
+        node = self.cat_nodes.get(cat)
+        n = len(categories.subtree_papers(node)) if node else 0
+
+        def go(yes: bool | None) -> None:
+            if not yes:
+                return
+            gone = categories.remove(cat)
+            for p in registry.scan():
+                if categories.clean(config.load(p).category) in gone:
+                    config.set_key(p, "category", "")
+            self.say(f"deleted {cat}; its {n} paper(s) are uncategorized now (the papers themselves are untouched)")
+            self.action_refresh()
+        self.push_screen(Confirm(f"Delete category [b]{escape(cat)}[/] (and its subcategories)?\n{n} paper(s) become uncategorized."), go)
+
+    def _move(self, delta: int) -> None:
+        if self.level != "papers":
+            return
+        cat = self.cat_path()
+        if cat is not None:
+            if cat == categories.NONE or not categories.move_category(cat, delta):
+                return
+            self.fill()
+            return self.keep_cursor(f"cat:{cat}")
+        it = self.selected()
+        if not it:
+            return
+        key = categories.clean(it.category) or categories.NONE
+        node = self.cat_nodes.get(key)
+        names = [p.path.name for p in node.papers] if node else []
+        if categories.move_paper("" if key == categories.NONE else key, names, it.path.name, delta):
+            self.fill()
+            self.keep_cursor(str(it.path))
+
+    def action_move_down(self) -> None:
+        self._move(1)
+
+    def action_move_up(self) -> None:
+        self._move(-1)
+
     def action_note(self) -> None:
         self.talk("note")
 
@@ -1098,6 +1372,9 @@ class Full(App):
 
 
 def run() -> int:
+    from .launcher import record_full_location
+    with contextlib.suppress(Exception):
+        record_full_location()  # `redline full back` / nvim :Redline full come back to this window
     app = Full()
     app.run()
     if app.open_root:

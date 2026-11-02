@@ -120,6 +120,8 @@ class Config:
     models: dict[str, dict] = field(default_factory=lambda: dict(DEFAULT_MODELS))
     tmux_model_key: str = "A"
     enforce_verification: bool = True
+    category: str = ""      # tree path in the `redline full` list, e.g. "Papers/Pop III"
+    notes: str = ""
     mcp_extra: dict[str, list[str]] = field(default_factory=lambda: {"zotero": ["zotero-mcp"]})
     legacy: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_LEGACY))
 
@@ -193,7 +195,7 @@ def load(root: Path | None = None) -> Config:
     legacy.update(data.get("legacy", {}))
     cfg = Config(root=root, main=main)
     for k in ("code_dir", "agent", "agent_kind", "layout", "tmux_quit_key", "ols", "overleaf_project",
-              "keep_comment_regex", "pre_push", "evidence_collection", "tmux_model_key"):
+              "keep_comment_regex", "pre_push", "evidence_collection", "tmux_model_key", "category", "notes"):
         if k in data:
             setattr(cfg, k, str(data[k]))
     if "enforce_verification" in data:
@@ -239,14 +241,27 @@ def code_ignores(root: Path, code_dir: str) -> list[str]:
     return [str(rel), f"{rel}/*"] if str(rel) != "." else []
 
 
-def set_verification(root: Path, on: bool) -> Path:
-    """Turn refcheck enforcement on or off in this paper's .redline.toml."""
+def _toml_value(v) -> str:
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, int):
+        return str(v)
+    return '"' + str(v).replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ") + '"'
+
+
+def set_key(root: Path, key: str, value) -> Path:
+    """Set a top-level key of this paper's .redline.toml (replacing the line, else adding it at the top)."""
     path = write_default(root)
     text = path.read_text()
-    line = f"enforce_verification = {'true' if on else 'false'}"
-    if re.search(r"^enforce_verification\s*=", text, re.M):
-        text = re.sub(r"^enforce_verification\s*=.*$", line, text, flags=re.M)
+    line = f"{key} = {_toml_value(value)}"
+    if re.search(rf"^{re.escape(key)}\s*=", text, re.M):
+        text = re.sub(rf"^{re.escape(key)}\s*=.*$", lambda m: line, text, count=1, flags=re.M)
     else:
         text = line + "\n" + text
     path.write_text(text)
     return path
+
+
+def set_verification(root: Path, on: bool) -> Path:
+    """Turn refcheck enforcement on or off in this paper's .redline.toml."""
+    return set_key(root, "enforce_verification", on)

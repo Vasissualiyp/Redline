@@ -369,3 +369,100 @@ def test_new_papers_can_opt_out_of_refcheck_at_creation(home, monkeypatch):
     assert config.load(registry.pull_existing("Loose", verify=False)).enforce_verification is False
     config.set_verification(home / "Loose", True)  # editable later
     assert config.load(home / "Loose").enforce_verification is True
+
+
+def test_categories_tree_order_colours(home):
+    from redline import categories
+    a, b, c = make_paper(home, "alpha"), make_paper(home, "beta"), make_paper(home, "gamma")
+    categories.add("Proposals", "green")
+    categories.add("Papers/Pop III", "#e5c07b")
+    config.set_key(a, "category", "Papers/Pop III")
+    config.set_key(b, "category", "Proposals")
+    with pytest.raises(Exception):
+        categories.add("x", "notacolour")
+    assert categories.paths() == ["Proposals", "Papers", "Papers/Pop III"]
+    tree = categories.build(registry.listing())
+    rows = [(k, o.path if k == "cat" else o.name, d) for k, o, d, _ in categories.flatten(tree, set())]
+    assert rows == [("cat", "Proposals", 0), ("paper", "beta", 1), ("cat", "Papers", 0), ("cat", "Papers/Pop III", 1),
+                    ("paper", "alpha", 2), ("cat", "Uncategorized", 0), ("paper", "gamma", 1)]
+    assert tree.children[0].color == "green" and tree.children[1].children[0].color == "#e5c07b"
+    assert [r[1].name for r in categories.flatten(tree, {"Proposals"}) if r[0] == "paper"] == ["alpha", "gamma"]
+    # reorder siblings: Papers before Proposals
+    assert categories.move_category("Papers", -1)
+    assert categories.paths()[0] == "Papers"
+    # papers inside a category: user order
+    config.set_key(c, "category", "Proposals")
+    before = [p.path.name for p in categories.build(registry.listing()).children[1].papers]
+    assert categories.move_paper("Proposals", list(before), before[1], -1)
+    again = [p.path.name for p in categories.build(registry.listing()).children[1].papers]
+    assert again == before[::-1]
+    # rename moves the subtree; remove drops it
+    assert "Papers/Pop III" in categories.rename("Papers", "Work")
+    assert categories.paths()[:2] == ["Work", "Work/Pop III"]
+    assert "Work/Pop III" in categories.remove("Work")
+    assert "Work" not in categories.paths()
+
+
+def test_tui_tree_edit_and_reorder(home):
+    from redline import categories
+    a, b = make_paper(home, "alpha"), make_paper(home, "beta")
+    categories.add("Papers", "cyan")
+    config.set_key(a, "category", "Papers")
+    from redline.fulltui import Full
+    import os
+    os.environ.pop("TMUX", None)
+
+    async def go():
+        app = Full()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await pilot.pause(0.8)
+            t = app.query_one("#papers")
+            assert t.row_count == 4  # Papers, alpha, Uncategorized, beta
+            assert app.cat_path() == "Papers"
+            await pilot.press("h")  # closes the category
+            await pilot.pause(0.2)
+            assert t.row_count == 3
+            await pilot.press("l")
+            await pilot.pause(0.2)
+            assert t.row_count == 4
+            await pilot.press("j", "h")  # from the paper up to its category
+            assert app.cat_path() == "Papers"
+            await pilot.press("j", "e")  # edit alpha
+            await pilot.pause(0.3)
+            assert app.screen.__class__.__name__ == "EditPaper"
+            app.screen.query_one("#e-verify").value = False
+            app.screen.query_one("#e-notes").value = "draft for the group"
+            await pilot.press("ctrl+s")
+            await pilot.pause(1.0)
+            cfg = config.load(a)
+            assert cfg.enforce_verification is False and cfg.notes == "draft for the group" and cfg.category == "Papers"
+            # beta -> category via the edit screen
+            await pilot.press("G", "e")
+            await pilot.pause(0.3)
+            app.screen.query_one("#e-cat").value = "Papers"
+            await pilot.press("ctrl+s")
+            await pilot.pause(1.0)
+            assert config.load(b).category == "Papers"
+            names = lambda: [p.path.name for p in app.cat_nodes["Papers"].papers]  # noqa: E731
+            first = names()
+            await pilot.press("g", "g", "j")  # on the first paper of Papers
+            await pilot.press("J")
+            await pilot.pause(0.5)
+            assert names() == first[::-1]
+    asyncio.run(go())
+
+
+def test_cli_categories_and_set(home, capsys):
+    from redline import cli
+    a = make_paper(home, "alpha")
+    assert cli.main(["full", "cat-add", "Papers/Pop III", "--color", "cyan"]) == 0
+    assert cli.main(["full", "set", "alpha", "category=Papers/Pop III"]) == 0
+    assert cli.main(["full", "set", "alpha", "enforce_verification=false"]) == 0
+    cfg = config.load(a)
+    assert cfg.category == "Papers/Pop III" and cfg.enforce_verification is False
+    capsys.readouterr()
+    assert cli.main(["full", "categories"]) == 0
+    out = capsys.readouterr().out
+    assert "[Papers] (white)" in out and "  [Papers/Pop III] (cyan)" in out and "    - alpha" in out
+    assert cli.main(["full", "cat-rm", "Papers"]) == 0
+    assert config.load(a).category == ""

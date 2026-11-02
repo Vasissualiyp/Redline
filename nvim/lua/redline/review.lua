@@ -210,6 +210,16 @@ function M.accept_all_unmarked()
   end
 end
 
+--- Back to the `redline full` list (its tmux window, or a new redline-full session).
+function M.home()
+  local st = core.state()
+  vim.system(rpc.shell("full back"), { cwd = st and st.root or vim.fn.getcwd(), text = true }, vim.schedule_wrap(function(r)
+    if r.code ~= 0 then
+      vim.notify("redline full: " .. ((r.stderr or "") .. (r.stdout or "")):gsub("%s+$", ""), vim.log.levels.WARN)
+    end
+  end))
+end
+
 function M.accept_all()
   if vim.fn.confirm("Accept every change in the paper (honouring %N/%X)?", "&Yes\n&No", 2) == 1 then
     local res = run_op({ action = "accept", selector = { all = true } })
@@ -498,6 +508,7 @@ local REVIEW_KEYS = {
   { "n", "A", function() M.resolve_range("accept", false) end, "accept section (or heading under cursor)" },
   { "x", "A", function() M.resolve_range("accept", true) end, "accept selection" },
   { "n", "R", function() M.resolve_range("reject", false) end, "reject section" },
+  { "n", "gh", M.home, "back to the redline full list (all papers)" },
   { "n", "gA", M.accept_all_unmarked, "accept ALL edits, ignoring %Y/%N/%X (asks first)" },
   { "x", "R", function() M.resolve_range("reject", true) end, "reject selection" },
   { "n", "M", function() M.resolve_range("markers", false) end, "apply %Y/%X markers in section" },
@@ -652,6 +663,7 @@ function M.buffer_maps(buf)
   map("n", p .. "v", function() require("redline.verify").evidence() end, "evidence window (toggle)")
   map("n", p .. "m", function() require("redline.agent").pick() end, "agent pane: switch model")
   map("n", p .. "o", function() require("redline.sync").sync() end, "sync to Overleaf")
+  map("n", p .. "H", M.home, "back to the redline full list")
   map("n", p .. "q", function() require("redline.sync").close() end, "close the sync output split")
   map("n", p .. "Q", function() require("redline.quit").quit() end, "close the whole redline session (asks)")
   map("n", p .. "w", function() require("redline.layout").pick() end, "pane layout preset")

@@ -55,9 +55,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("-C", "--root", help="paper directory (default: nearest with .redline.toml, or cwd)")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("full", help="all your papers in one place: list | remote | new | open | tui")
-    p.add_argument("what", nargs="?", choices=["tui", "list", "remote", "new", "open"], default="tui")
-    p.add_argument("name", nargs="?", help="paper (open) or Overleaf project name (new)")
+    p = sub.add_parser("full", help="all your papers in one place: tui | list | remote | new | open | back | "
+                                    "categories | cat-add | cat-rm | cat-color | set")
+    p.add_argument("what", nargs="?", default="tui", choices=[
+        "tui", "list", "remote", "new", "open", "back", "categories", "cat-add", "cat-rm", "cat-color", "set"])
+    p.add_argument("name", nargs="?", help="paper (open, set), Overleaf project (new) or category (cat-*)")
+    p.add_argument("extra", nargs="?", help="set: key=value (category, notes, enforce_verification, code_dir); "
+                                            "cat-color: the colour")
+    p.add_argument("--color", default="", help="cat-add: colour (name or #rrggbb)")
     p.add_argument("--pull", action="store_true", help="new: pull the existing Overleaf project of this name")
     p.add_argument("--dir", help="new: directory for the paper (default: next to your other papers)")
     p.add_argument("--code-dir", default="", help="new: analysis code directory (default: analysis/ inside the paper)")
@@ -166,11 +171,49 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
 
+def _categories_cmd(a: argparse.Namespace) -> int:
+    from . import categories, config, registry
+    if a.what == "categories":
+        rows = registry.listing()
+        tree = categories.build(rows)
+        for kind, obj, depth, node in categories.flatten(tree, set()):
+            print("  " * depth + (f"[{obj.path}] ({node.color})" if kind == "cat" else f"- {obj.name}"))
+        return 0
+    if not a.name:
+        print(f"redline full {a.what}: give a name", file=sys.stderr)
+        return 2
+    if a.what == "cat-add":
+        print("added " + categories.add(a.name, a.color))
+    elif a.what == "cat-color":
+        categories.set_color(categories.clean(a.name), a.extra or "")
+    elif a.what == "cat-rm":
+        gone = categories.remove(categories.clean(a.name))
+        for p in registry.scan():
+            if categories.clean(config.load(p).category) in gone:
+                config.set_key(p, "category", "")
+        print("removed " + ", ".join(gone))
+    else:  # set NAME key=value
+        key, _, val = (a.extra or "").partition("=")
+        if key not in ("category", "notes", "enforce_verification", "code_dir", "overleaf_project") or not _:
+            print("usage: redline full set NAME key=value (category, notes, enforce_verification, code_dir, "
+                  "overleaf_project)", file=sys.stderr)
+            return 2
+        root = registry.find(a.name)
+        config.set_key(root, key, val.lower() in ("true", "1", "yes", "on") if key == "enforce_verification" else val)
+        print(f"{root.name}: {key} = {val}")
+    return 0
+
+
 def _full_cmd(a: argparse.Namespace) -> int:
     from . import registry
     if a.what == "tui":
         from .fulltui import run
         return run()
+    if a.what == "back":
+        from .launcher import go_full
+        return go_full()
+    if a.what in ("categories", "cat-add", "cat-rm", "cat-color", "set"):
+        return _categories_cmd(a)
     if a.what == "list":
         rows = registry.listing()
         if a.json:

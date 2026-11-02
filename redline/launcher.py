@@ -183,6 +183,43 @@ def open_workspace(root: Path | None, attach: bool = True) -> int:
     return 0
 
 
+# ---- back to the all-papers list ------------------------------------------------
+FULL_SESSION = "redline-full"
+
+
+def record_full_location() -> None:
+    """Called by the `redline full` TUI: remember which tmux window it runs in."""
+    pane = os.environ.get("TMUX_PANE")
+    if not pane:
+        return
+    loc = subprocess.run(["tmux", "display", "-p", "-t", pane, "#{session_name}:#{window_id}"],
+                         capture_output=True, text=True).stdout.strip()
+    if loc:
+        subprocess.run(["tmux", "set-option", "-g", "@redline_full", loc], capture_output=True)
+
+
+def go_full() -> int:
+    """Switch to the `redline full` list: its window if it is running, else a new `redline-full` session."""
+    if not shutil.which("tmux"):
+        print("tmux not found", file=sys.stderr)
+        return 1
+    loc = subprocess.run(["tmux", "show-option", "-gqv", "@redline_full"], capture_output=True, text=True).stdout.strip()
+    windows = subprocess.run(["tmux", "list-windows", "-a", "-F", "#{session_name}:#{window_id}"],
+                             capture_output=True, text=True).stdout.split()
+    target = loc if loc and loc in windows else None
+    if not target:
+        if subprocess.run(["tmux", "has-session", "-t", f"={FULL_SESSION}"], capture_output=True).returncode != 0:
+            cols, rows = shutil.get_terminal_size((200, 50))
+            _tmux("new-session", "-d", "-s", FULL_SESSION, "-n", "full", "-x", str(cols), "-y", str(rows),
+                  in_login_shell(f"{_env_prefix()}{_shell(redline_cmd())} full"))
+        target = f"={FULL_SESSION}"
+    if os.environ.get("TMUX"):
+        _tmux("switch-client", "-t", target)
+    else:
+        os.execvp("tmux", ["tmux", "attach-session", "-t", target])
+    return 0
+
+
 # ---- quitting the whole workspace ------------------------------------------------
 def _session_of_caller() -> str:
     pane = os.environ.get("TMUX_PANE")

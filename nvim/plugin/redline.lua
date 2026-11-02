@@ -13,6 +13,7 @@ local subcommands = {
   fix = function() require("redline.review").fix_with_agent() end,
   push = function() require("redline.review").push() end,
   pull = function() require("redline.review").pull() end,
+  full = function() require("redline.review").home() end,
   acceptall = function() require("redline.review").accept_all() end,
   acceptallforce = function() require("redline.review").accept_all_unmarked() end,
   sync = function() require("redline.sync").sync() end,

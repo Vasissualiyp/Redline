@@ -89,6 +89,9 @@ class Info:
     running: bool = False
     active: float = 0.0          # unix time of the last edit
     error: str = ""
+    category: str = ""
+    notes: str = ""
+    strict: bool = True          # refcheck enforcement
 
     def as_dict(self) -> dict:
         d = self.__dict__.copy()
@@ -112,6 +115,7 @@ def info(root: Path, running: set[str] | None = None) -> Info:
     try:
         proj = Project.open(root)
         it.name = proj.cfg.project_name  # the Overleaf project's name, as written there
+        it.category, it.notes, it.strict = proj.cfg.category, proj.cfg.notes, proj.cfg.enforce_verification
         main = proj.cfg.main_path
         items = [i for i in proj.doc().items if i.kind != "comment"]
         it.pending = len(items)
