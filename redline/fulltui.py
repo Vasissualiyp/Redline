@@ -12,14 +12,18 @@ import os
 from pathlib import Path
 
 from rich.markup import escape
+from rich.segment import Segment
+from rich.style import Style
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
+from textual.strip import Strip
+from textual.widget import Widget
 from textual.widgets import DataTable, Footer, Header, Input, Label, OptionList, RichLog, Static
 
-from . import overleaf, registry
+from . import kittygfx, overleaf, registry, thumb
 from .model import RedlineError
 
 SYNC_STYLE = {"in sync": "green", "local edits": "yellow", "no base": "red"}
@@ -29,6 +33,114 @@ def _cell(n: int | None, warn: bool = False) -> str:
     if n is None:
         return "?"
     return f"[b yellow]{n}[/]" if n and warn else str(n)
+
+
+class _DriverOut:
+    """Where kitty graphics escapes go: through Textual's own output, so they stay in order."""
+
+    def __init__(self, app: App):
+        self.app = app
+
+    def write(self, data: bytes) -> None:
+        drv = getattr(self.app, "_driver", None)
+        if drv is not None:
+            drv.write(data.decode("latin-1"))
+
+    def flush(self) -> None:
+        pass
+
+
+class PagePreview(Widget):
+    """First page of the selected paper, drawn with kitty graphics (unicode placeholders)."""
+
+    DEFAULT_CSS = "PagePreview { height: 1fr; }"
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.gfx: kittygfx.Kitty | None = None
+        self.pdf: Path | None = None
+        self.note = ""
+        self.placed: str | None = None
+        self.ticket = 0
+
+    def graphics_ok(self) -> bool:
+        term = os.environ.get("TERM", "")
+        return bool(os.environ.get("REDLINE_PREVIEW", "1") != "0"
+                    and ("kitty" in term or os.environ.get("KITTY_WINDOW_ID") or os.environ.get("TMUX")))
+
+    def show_pdf(self, pdf: Path | None, why: str = "") -> None:
+        self.pdf, self.note = pdf, why
+        self.placed = None
+        self.refresh()
+        if pdf and self.graphics_ok():
+            self.ticket += 1
+            self.draw(self.ticket, pdf)
+
+    def on_resize(self) -> None:
+        if self.pdf and self.graphics_ok():
+            self.ticket += 1
+            self.draw(self.ticket, self.pdf)
+
+    @work(thread=True, exclusive=True, group="thumb")
+    def draw(self, ticket: int, pdf: Path) -> None:
+        import time
+        time.sleep(0.15)  # scrolling through the list: only the paper you stop on is drawn
+        if ticket != self.ticket:
+            return
+        cols, rows = self.size.width, self.size.height
+        if cols < 4 or rows < 3:
+            return
+        cw, ch = thumb.cell_px()
+        key = f"{pdf}:{pdf.stat().st_mtime_ns}:{cols}x{rows}"
+        if self.gfx and self.gfx.has(key):
+            self.app.call_from_thread(self.place, ticket, key)
+            return
+        img = thumb.first_page(pdf, cols * cw)
+        if img is None:
+            self.app.call_from_thread(self.nothing, ticket, "cannot render the PDF")
+            return
+        c, r = thumb.fit(img.width / img.height, cols, rows, cw, ch)
+        img = img.resize((c * cw, r * ch))
+        png = kittygfx.encode_png(img)
+        self.app.call_from_thread(self.send, ticket, key, png, c, r)
+
+    def send(self, ticket: int, key: str, png: bytes, c: int, r: int) -> None:
+        if self.gfx is None:
+            self.gfx = kittygfx.Kitty(out=_DriverOut(self.app), tmux=bool(os.environ.get("TMUX")))
+        if ticket != self.ticket:
+            return
+        self.gfx.send(key, png, c, r)
+        self.place(ticket, key)
+
+    def place(self, ticket: int, key: str) -> None:
+        if ticket == self.ticket:
+            self.placed = key
+            self.refresh()
+
+    def nothing(self, ticket: int, why: str) -> None:
+        if ticket == self.ticket:
+            self.note = why
+            self.refresh()
+
+    def render_line(self, y: int) -> Strip:
+        w = self.size.width
+        if self.placed and self.gfx and self.placed in self.gfx.images:
+            iid, cols, rows = self.gfx.images[self.placed]
+            if y < rows:
+                r, g, b = (iid >> 16) & 255, (iid >> 8) & 255, iid & 255
+                text = (kittygfx.PLACEHOLDER + chr(kittygfx.DIACRITICS[y]) + chr(kittygfx.DIACRITICS[0])
+                        + kittygfx.PLACEHOLDER * (cols - 1))
+                return Strip([Segment(text, Style.parse(f"rgb({r},{g},{b})")), Segment(" " * (w - cols))])
+            return Strip.blank(w)
+        if y == 0:
+            msg = self.note or ("no PDF yet: press c to compile" if not self.pdf else
+                                "page preview needs a kitty terminal")
+            return Strip([Segment(msg[:w].ljust(w), Style(dim=True))])
+        return Strip.blank(w)
+
+    def forget(self) -> None:
+        if self.gfx:
+            self.gfx.forget()
 
 
 class NewPaper(ModalScreen):
@@ -73,7 +185,8 @@ class NewPaper(ModalScreen):
         self.shown = [p for p in self.remote if want in p["name"].lower()]
         for p in self.shown:
             mark = "  [dim](already here)[/]" if p["name"] in local else ""
-            lst.add_option(f"{escape(p['name'])}  [dim]{overleaf.pretty(p['updated'])}[/]{mark}")
+            name = p["name"] if len(p["name"]) <= 44 else p["name"][:43] + "…"
+            lst.add_option(f"{escape(name):44}  [dim]{overleaf.pretty(p['updated'])}[/]{mark}")
         if err:
             lst.add_option(f"[red]{escape(err)}[/]")
         if self.shown:
@@ -122,6 +235,7 @@ class Full(App):
     CSS = """
     #papers { width: 3fr; }
     #side { width: 2fr; border-left: solid $primary; padding: 0 1; }
+    #detail { height: 8; }
     #log { height: 9; border-top: solid $primary; }
     """
 
@@ -134,7 +248,9 @@ class Full(App):
         yield Header()
         with Horizontal():
             yield DataTable(id="papers", cursor_type="row", zebra_stripes=True)
-            yield Static(id="side")
+            with Vertical(id="side"):
+                yield Static(id="detail")
+                yield PagePreview(id="page")
         yield RichLog(id="log", wrap=True, markup=False)
         yield Footer()
 
@@ -189,8 +305,10 @@ class Full(App):
 
     def show_detail(self) -> None:
         it = self.selected()
-        side = self.query_one("#side", Static)
+        side = self.query_one("#detail", Static)
+        page = self.query_one("#page", PagePreview)
         if not it:
+            page.show_pdf(None, "")
             side.update("No papers under " + ", ".join(str(r) for r in registry.roots())
                         + "\n\nPress [b]n[/] to make one.")
             return
@@ -202,10 +320,23 @@ class Full(App):
                       f"Overleaf          {it.sync}", f"tmux session      {registry.session_name(it.path)}"
                       + (" (running)" if it.running else ""), f"last edit         {registry.ago(it.active)}"]
         side.update("\n".join(lines))
+        pdf = None
+        if not it.error:
+            from .state import Project
+            try:
+                pdf = thumb.paper_pdf(Project.open(it.path))
+            except Exception:
+                pdf = None
+        if pdf is None or pdf != page.pdf:
+            page.show_pdf(pdf)
 
     # ---- actions -----------------------------------------------------------------
     def say(self, text: str) -> None:
         self.query_one("#log", RichLog).write(text)
+
+    def action_quit(self) -> None:
+        self.query_one("#page", PagePreview).forget()
+        self.exit()
 
     def action_open(self) -> None:
         it = self.selected()
@@ -216,7 +347,7 @@ class Full(App):
             self.attach(it.path)
         else:
             self.open_root = it.path
-            self.exit()
+            self.action_quit()
 
     @work(thread=True)
     def attach(self, root: Path) -> None:

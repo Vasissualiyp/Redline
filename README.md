@@ -383,6 +383,8 @@ Papers are the directories under `roots` (default `~/Software/Overleaf-nix-flake
 `.redline.toml`; set `roots` and `papers_dir` (where new papers go) in `~/.config/redline/config.toml`.
 In the TUI: `enter` open, `n` new or pull, `p` pull, `P` push (asks first), `c` compile, `r` refresh, `q` quit.
 Accepting and rejecting stays inside a paper's workspace.
+The right side shows the first page of the highlighted paper's last build (kitty graphics, like the PDF pane;
+`REDLINE_PREVIEW=0` turns it off), so papers are recognisable at a glance. Papers never compiled say so; press `c`.
 
 A paper without `--code-dir` gets an `analysis/` directory for its code, kept out of Overleaf.
 
