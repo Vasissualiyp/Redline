@@ -428,3 +428,18 @@ row for a paper being created or pulled, "rendering the page…" in the picture 
 list…" in the new-paper dialog. A job that ends at once still shows for ~0.8 s. In nvim the statusline's mode label
 animates while compiling (auto or manual) or syncing with Overleaf. On the command line `redline compile`,
 `redline init` and `redline full new` show a spinner on stderr (only on a terminal).
+
+## Categories, the edit screen and coming back
+
+`redline full` lists papers as leaves of a tree of categories you define (`~/.config/redline/categories.json`;
+nested with `/`: `Papers/Pop III`; their order and colour are yours; papers without one sit under *Uncategorized*, and with
+no categories at all the list stays flat). On the paper list: `h`/`l`/`enter` close and open a category (`h` on a
+paper jumps to its category), `C` new category (the cursor's category is the default parent), `e` edit (a category: name
+and colour; a paper: **category, strict refchecks on/off, code directory, notes, Overleaf project name**, `ctrl+s` saves;
+`e` also works inside a paper's quick menu), `J`/`K` move a category among its siblings or a paper within its category,
+`D` delete a category (its papers become uncategorized). A paper's category is the `category` key of its `.redline.toml`.
+From the shell: `redline full categories | cat-add NAME --color C | cat-color NAME C | cat-rm NAME |
+set PAPER key=value`.
+
+**Back to the list from a paper's editor:** `gh` in review mode (`<prefix>H`, `:Redline full`) switches the tmux client
+back to the window running `redline full`, or starts a `redline-full` session if it isn't running (`redline full back`).
