@@ -306,7 +306,7 @@ PLAIN_PROSE_LIMIT = 3  # words of prose an untracked edit may change silently
 
 def plain_edit(doc: Document, old_text: str, new_text: str, section: str | None = None,
                occurrence: int | None = None, reason: str | None = None,
-               force: bool = False) -> list[TextEdit]:
+               force: bool = False, check_citations: bool = True) -> list[TextEdit]:
     r"""Untracked edit. Prose changes beyond a few words must be tracked instead;
     with force + reason the edit is made and explained in a \chcomment."""
     import difflib
@@ -316,7 +316,7 @@ def plain_edit(doc: Document, old_text: str, new_text: str, section: str | None 
     old = doc.src[s:e]
     from .verify import cite_keys
     fresh = cite_keys(new_text) - cite_keys(old)
-    if fresh:
+    if fresh and check_citations:
         raise RedlineError(f"plain_edit cannot add citations ({', '.join(sorted(fresh))}): use "
                            "propose_replace/propose_insert with evidence=[...] so they are refchecked")
     a, b = _prose(old), _prose(new_text)

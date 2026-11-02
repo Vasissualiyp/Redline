@@ -181,6 +181,35 @@ function M.resolve_range(action, visual)
   end
 end
 
+--- Accept every edit whatever its %Y/%N/%X says (comments stay), after asking.
+function M.accept_all_unmarked()
+  local st = core.state()
+  if not (st and st.data) then
+    return vim.notify("redline: buffer not attached")
+  end
+  local n, noted, rejected = 0, 0, 0
+  for _, it in ipairs(st.data.items) do
+    if it.kind ~= "comment" then
+      n = n + 1
+      if it.marker and it.marker.kind == "N" then noted = noted + 1 end
+      if it.marker and it.marker.kind == "X" then rejected = rejected + 1 end
+    end
+  end
+  if n == 0 then
+    return vim.notify("redline: no edits to accept")
+  end
+  local q = ("Accept ALL %d edits without looking? This ignores markers: %d %%N notes, %d %%X rejects. Comments stay.")
+    :format(n, noted, rejected)
+  if vim.fn.confirm(q, "&Yes\n&No", 2) ~= 1 then
+    return
+  end
+  local res = run_op({ action = "accept", selector = { kinds = { "added", "deleted", "replaced", "highlight" } },
+    honor_markers = false })
+  if res then
+    vim.notify("redline: " .. summary(res.report))
+  end
+end
+
 function M.accept_all()
   if vim.fn.confirm("Accept every change in the paper (honouring %N/%X)?", "&Yes\n&No", 2) == 1 then
     local res = run_op({ action = "accept", selector = { all = true } })
@@ -465,6 +494,7 @@ local REVIEW_KEYS = {
   { "n", "A", function() M.resolve_range("accept", false) end, "accept section (or heading under cursor)" },
   { "x", "A", function() M.resolve_range("accept", true) end, "accept selection" },
   { "n", "R", function() M.resolve_range("reject", false) end, "reject section" },
+  { "n", "gA", M.accept_all_unmarked, "accept ALL edits, ignoring %Y/%N/%X (asks first)" },
   { "x", "R", function() M.resolve_range("reject", true) end, "reject selection" },
   { "n", "M", function() M.resolve_range("markers", false) end, "apply %Y/%X markers in section" },
   { "x", "M", function() M.resolve_range("markers", true) end, "apply %Y/%X markers in selection" },

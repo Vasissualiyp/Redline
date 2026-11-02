@@ -37,6 +37,10 @@ overleaf_project = "{overleaf_project}"
 keep_comment_regex = "TODO"
 # Zotero collection for the evidence notes behind % VERIFIED lines ({{paper}} = this folder's name)
 evidence_collection = "Redline evidence/{{paper}}"
+# Refcheck enforcement: new citations need evidence from the cited paper's PDF (and leave a
+# % VERIFIED line); lint flags citations without one. Only the human turns it off, for
+# projects that are not about cited literature (`redline verification off`); agents must not.
+enforce_verification = {enforce_verification}
 # Shell command run before pushing (e.g. rsync fresh plots into light/).
 pre_push = ""
 compile_timeout = 600
@@ -115,6 +119,7 @@ class Config:
     agents: dict[str, dict] = field(default_factory=lambda: dict(DEFAULT_AGENTS))
     models: dict[str, dict] = field(default_factory=lambda: dict(DEFAULT_MODELS))
     tmux_model_key: str = "A"
+    enforce_verification: bool = True
     mcp_extra: dict[str, list[str]] = field(default_factory=lambda: {"zotero": ["zotero-mcp"]})
     legacy: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_LEGACY))
 
@@ -191,6 +196,8 @@ def load(root: Path | None = None) -> Config:
               "keep_comment_regex", "pre_push", "evidence_collection", "tmux_model_key"):
         if k in data:
             setattr(cfg, k, str(data[k]))
+    if "enforce_verification" in data:
+        cfg.enforce_verification = bool(data["enforce_verification"])
     if "compile_timeout" in data:
         cfg.compile_timeout = int(data["compile_timeout"])
     if "merge_timeout" in data:
@@ -205,7 +212,8 @@ def load(root: Path | None = None) -> Config:
     return cfg
 
 
-def write_default(root: Path, code_dir: str = "", overleaf_project: str = "") -> Path:
+def write_default(root: Path, code_dir: str = "", overleaf_project: str = "",
+                  enforce_verification: bool = True) -> Path:
     """Create .redline.toml. Without a code directory, `analysis/` inside the paper
     is created for it (kept out of Overleaf by sync.ensure_ignores)."""
     path = root / CONFIG_NAME
@@ -215,8 +223,8 @@ def write_default(root: Path, code_dir: str = "", overleaf_project: str = "") ->
         target = root / os.path.expanduser(code_dir)
         if code_dir == DEFAULT_CODE_DIR or not target.exists():
             target.mkdir(parents=True, exist_ok=True)
-        path.write_text(DEFAULT_TOML.format(main=detect_main(root), code_dir=code_dir,
-                                            overleaf_project=overleaf_project))
+        path.write_text(DEFAULT_TOML.format(main=detect_main(root), code_dir=code_dir, overleaf_project=overleaf_project,
+                                            enforce_verification="true" if enforce_verification else "false"))
     return path
 
 
@@ -229,3 +237,16 @@ def code_ignores(root: Path, code_dir: str) -> list[str]:
     except ValueError:
         return []
     return [str(rel), f"{rel}/*"] if str(rel) != "." else []
+
+
+def set_verification(root: Path, on: bool) -> Path:
+    """Turn refcheck enforcement on or off in this paper's .redline.toml."""
+    path = write_default(root)
+    text = path.read_text()
+    line = f"enforce_verification = {'true' if on else 'false'}"
+    if re.search(r"^enforce_verification\s*=", text, re.M):
+        text = re.sub(r"^enforce_verification\s*=.*$", line, text, flags=re.M)
+    else:
+        text = line + "\n" + text
+    path.write_text(text)
+    return path

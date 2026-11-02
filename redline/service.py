@@ -130,7 +130,7 @@ class Service:
             "changes": sum(1 for i in doc.items if i.kind != "comment"),
             "comments": sum(1 for i in doc.items if i.kind == "comment"),
             "markers": {k: sum(1 for i in doc.items if i.marker and i.marker.kind == k) for k in "YNX"},
-            "lint_errors": sum(1 for i in _lint.lint(doc) if i.severity == "error"),
+            "lint_errors": sum(1 for i in _lint.lint(doc, self.proj.cfg.enforce_verification) if i.severity == "error"),
             "has_base": (self.proj.dir / "base").exists(),
             "pdf": str(_compile.view_pdf(self.proj)),
         }
@@ -221,7 +221,8 @@ class Service:
     def _edit(self, fn, reason: str, origin: str | None, evidence: list[dict] | None = None,
               unchecked_reason: str | None = None) -> str:
         doc = self.proj.doc()
-        need = self._citing_items(doc, fn)
+        # enforce_verification = false (per paper): citations need no evidence and leave no result line
+        need = self._citing_items(doc, fn) if self.proj.cfg.enforce_verification else {}
         entries: dict[str, _evidence.Entry] = {}
         summary = ""
         if need:
@@ -267,7 +268,7 @@ class Service:
         old_ids = {i.id for i in before.items}
         new = [i for i in after.items if i.id not in old_ids]
         org = self.proj.origins()
-        errs = [i for i in _lint.lint(after) if i.severity == "error"
+        errs = [i for i in _lint.lint(after, self.proj.cfg.enforce_verification) if i.severity == "error"
                 and any(n.line_start <= i.line <= n.line_end for n in new)]
         out = "\n".join("created " + format_item(describe(after, i, org)) for i in new) or "done"
         if summary:
@@ -296,7 +297,8 @@ class Service:
 
     def plain_edit(self, old_text, new_text, section=None, occurrence=None, origin=None,
                    reason=None, force=False):
-        self._edit(lambda d: author.plain_edit(d, old_text, new_text, section, occurrence, reason, force),
+        self._edit(lambda d: author.plain_edit(d, old_text, new_text, section, occurrence, reason, force,
+                                               check_citations=self.proj.cfg.enforce_verification),
                    "plain_edit" + (f": {reason}" if reason else ""), origin)
         return "replaced (untracked" + (", explained in a \\chcomment)" if reason else ")")
 
@@ -362,7 +364,7 @@ class Service:
 
             self.proj.transact(fn, reason="lint --fix")
         doc = self.proj.doc()
-        issues = _lint.lint(doc)
+        issues = _lint.lint(doc, self.proj.cfg.enforce_verification)
         out = []
         if fix:
             out.append(f"fixed {len(fixed)} issue(s)")

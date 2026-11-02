@@ -244,7 +244,7 @@ def push(proj: Project, force: bool = False, skip_pull: bool = False) -> SyncRep
     if rep.conflicts:
         rep.messages.append("not pushing: resolve the merge conflicts first")
         return rep
-    errors = [i for i in lint(proj.doc()) if i.severity == "error"]
+    errors = [i for i in lint(proj.doc(), proj.cfg.enforce_verification) if i.severity == "error"]
     if errors and not force:
         rep.messages.append("not pushing: lint errors (run `redline lint --fix`):\n"
                             + "\n".join(f"  l.{i.line} {i.code}: {i.message}" for i in errors[:10]))

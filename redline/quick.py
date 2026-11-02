@@ -43,6 +43,22 @@ def reject(proj: Project, cid: str) -> str:
     return Service(proj).resolve("reject", {"ids": [cid]})
 
 
+BULK_KINDS = ["added", "deleted", "replaced", "highlight"]
+
+
+def bulk_summary(rows: list[dict]) -> dict:
+    """What accepting every edit would do: counts, including the markers it would ignore."""
+    edits = [r for r in rows if r["kind"] in BULK_KINDS]
+    mark = lambda k: sum(1 for r in edits if r["marker"] and r["marker"]["kind"] == k)  # noqa: E731
+    return {"edits": len(edits), "notes": mark("N"), "rejects": mark("X"), "accepts": mark("Y"),
+            "comments": sum(1 for r in rows if r["kind"] == "comment")}
+
+
+def accept_all(proj: Project) -> str:
+    """Accept every edit whatever its %Y/%N/%X marker says. Standalone comments stay."""
+    return Service(proj).resolve("accept", {"kinds": BULK_KINDS}, honor_markers=False)
+
+
 def undo(proj: Project) -> str:
     return Service(proj).undo()
 

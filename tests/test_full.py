@@ -282,3 +282,90 @@ def test_tui_text_view_and_chat(home, monkeypatch):
             await pilot.pause(1.0)
     asyncio.run(go())
     assert started and "Message about the paper" in sent[0] and "hello" in sent[0]
+
+
+
+
+def test_enforcement_off_lets_citations_through(home):
+    from redline.service import Service
+    from redline.state import Project
+    d = make_paper(home)
+    (d / "main.tex").write_text("\\documentclass{article}\n\\begin{document}\n\\section{A}\nStars form.\n\nGas flows.\n\\end{document}\n")
+    # on (default): a new citation without evidence is refused and nothing is written
+    svc = Service(Project.open(d))
+    with pytest.raises(Exception, match="refcheck"):
+        svc.propose_replace("Stars form.", "Stars form \\citep{smith20}.")
+    assert "smith20" not in (d / "main.tex").read_text()
+    config.set_verification(d, False)
+    proj = Project.open(d)
+    assert proj.cfg.enforce_verification is False
+    out = Service(proj).propose_replace("Stars form.", "Stars form \\citep{smith20}.")
+    src = (d / "main.tex").read_text()
+    assert "smith20" in src and "% VERIFIED" not in src and "% UNVERIFIED" not in src
+    assert "refcheck" not in out
+    assert not [i for i in __import__("redline.lint", fromlist=["lint"]).lint(proj.doc(), False)
+                if i.code == "unverified-citation"]
+    Service(proj).plain_edit("Gas flows.", "Gas flows \\citep{jones21}.")  # plain edits may cite too
+    assert "jones21" in (d / "main.tex").read_text()
+    from redline import mcp_server
+    import os
+    os.environ["REDLINE_ROOT"] = str(d)
+    try:
+        assert "Reference checking is OFF" in mcp_server.instructions()
+    finally:
+        os.environ.pop("REDLINE_ROOT")
+
+
+def test_bulk_accept_ignores_markers(home):
+    from redline import quick
+    from redline.state import Project
+    d = make_paper(home)
+    (d / "main.tex").write_text(
+        "\\documentclass{article}\n\\begin{document}\n\\section{A}\n"
+        "One \\added{a} %N later please\n\nTwo \\deleted{b} %X\n\nThree \\added{c}\n\n\\skcomment{keep me}\n\\end{document}\n")
+    proj = Project.open(d)
+    rows = quick.list_changes(proj)
+    n = quick.bulk_summary(rows)
+    assert (n["edits"], n["notes"], n["rejects"], n["comments"]) == (3, 1, 1, 1)
+    quick.accept_all(proj)
+    src = (d / "main.tex").read_text()
+    assert "\\added" not in src and "\\deleted" not in src and "%N" not in src and "%X" not in src
+    assert "One a" in src and "Two" in src and " b" not in src.split("Two")[1].split("Three")[0]
+    assert "\\skcomment{keep me}" in src
+    quick.undo(proj)
+    assert "\\added{a}" in (d / "main.tex").read_text()
+
+
+def test_tui_accept_all_asks_first(home):
+    from redline.fulltui import Full
+    d = make_paper(home, "alpha")
+    (d / "main.tex").write_text(CHANGES)
+    import os
+    os.environ.pop("TMUX", None)
+
+    async def go():
+        app = Full()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await pilot.pause(0.6)
+            await pilot.press("l")
+            await pilot.pause(1.0)
+            await pilot.press("A")
+            await pilot.pause(0.3)
+            assert app.screen.__class__.__name__ == "Confirm"
+            await pilot.press("n")
+            await pilot.pause(0.5)
+            assert "\\added" in (d / "main.tex").read_text()   # declined: untouched
+            await pilot.press("A")
+            await pilot.pause(0.3)
+            await pilot.press("y")
+            await pilot.pause(1.5)
+            assert "\\added" not in (d / "main.tex").read_text()
+    asyncio.run(go())
+
+
+def test_new_papers_can_opt_out_of_refcheck_at_creation(home, monkeypatch):
+    monkeypatch.setattr(sync, "fetch_project", lambda name, dest, ols="ols": (dest / "main.tex").write_text(PAPER) or "")
+    assert config.load(registry.pull_existing("Kept")).enforce_verification is True
+    assert config.load(registry.pull_existing("Loose", verify=False)).enforce_verification is False
+    config.set_verification(home / "Loose", True)  # editable later
+    assert config.load(home / "Loose").enforce_verification is True

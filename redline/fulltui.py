@@ -347,6 +347,7 @@ class Full(App):
         Binding("n", "key_n", "New / note"),
         Binding("a", "accept", "Accept"),
         Binding("x", "reject", "Reject"),
+        Binding("A", "accept_all", "Accept ALL"),
         Binding("d", "discuss", "Ask AI"),
         Binding("t", "chat", "Talk to AI"),
         Binding("v", "toggle_view", "Page/Text"),
@@ -776,6 +777,41 @@ class Full(App):
         from . import quick
         self._decide("accepted", quick.accept)
 
+    def action_accept_all(self) -> None:
+        """Accept every edit of the paper whatever its markers say, after asking."""
+        from . import quick
+        from .state import Project
+        root = self.paper if self.level == "changes" else (self.selected().path if self.selected() else None)
+        if not root:
+            return
+        try:
+            rows = quick.load(Project.open(root))[0]
+        except RedlineError as e:
+            return self.say(f"cannot read the paper: {e}")
+        n = quick.bulk_summary(rows)
+        if not n["edits"]:
+            return self.say("no edits to accept")
+        text = (f"Accept ALL [b]{n['edits']}[/] edits of [b]{escape(root.name)}[/] without looking?\n"
+                f"This ignores your markers: {n['notes']} %N (notes for the agent), {n['rejects']} %X (rejects), "
+                f"{n['accepts']} %Y.\nStandalone comments ({n['comments']}) stay. `u` undoes it.")
+
+        def go(yes: bool | None) -> None:
+            if yes:
+                self.bulk_accept(root)
+        self.push_screen(Confirm(text), go)
+
+    @work(thread=True, group="decide")
+    def bulk_accept(self, root: Path) -> None:
+        from . import quick
+        from .state import Project
+        try:
+            out = quick.accept_all(Project.open(root))
+            self.call_from_thread(self.say, "accepted all edits:\n" + out)
+            self.call_from_thread(self.schedule_compile)
+        except RedlineError as e:
+            self.call_from_thread(self.say, f"accept all failed: {e}")
+        self.call_from_thread(self.action_refresh)
+
     def action_reject(self) -> None:
         from . import quick
         self._decide("rejected", quick.reject)
@@ -886,16 +922,21 @@ class Full(App):
 
     def action_new(self) -> None:
         def done(res) -> None:
-            if res:
-                self.make(*res)
+            if not res:
+                return
+
+            def ask(yes: bool | None) -> None:
+                self.make(*res, verify=bool(yes))
+            self.push_screen(Confirm("Check every citation in this paper against Zotero (refcheck)?\n"
+                                     "[b]y[/] yes (default for papers)   [b]n[/] no: not a project about cited literature"), ask)
         self.push_screen(NewPaper(), done)
 
     @work(thread=True, group="job")
-    def make(self, how: str, name: str) -> None:
+    def make(self, how: str, name: str, verify: bool = True) -> None:
         say = lambda s: self.call_from_thread(self.say, s)  # noqa: E731
         say(f"{'creating' if how == 'new' else 'pulling'} {name!r} ...")
         try:
-            dest = (registry.create_blank if how == "new" else registry.pull_existing)(name)
+            dest = (registry.create_blank if how == "new" else registry.pull_existing)(name, verify=verify)
             say(f"ready: {dest}")
         except RedlineError as e:
             say(f"failed: {e}")

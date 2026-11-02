@@ -164,9 +164,9 @@ def _dest(name: str, dest: Path | None) -> Path:
     return dest
 
 
-def _adopt(dest: Path, project: str, code_dir: str = "") -> Project:
+def _adopt(dest: Path, project: str, code_dir: str = "", verify: bool = True) -> Project:
     """.redline.toml, ignores and the MCP config for a downloaded or new paper."""
-    config.write_default(dest, code_dir, project if project != dest.name else "")
+    config.write_default(dest, code_dir, project if project != dest.name else "", verify)
     sync.ensure_ignores(dest)
     proj = Project.open(dest)
     from .launcher import write_mcp_config
@@ -174,12 +174,12 @@ def _adopt(dest: Path, project: str, code_dir: str = "") -> Project:
     return proj
 
 
-def pull_existing(name: str, dest: Path | None = None, code_dir: str = "") -> Path:
+def pull_existing(name: str, dest: Path | None = None, code_dir: str = "", verify: bool = True) -> Path:
     """Download the Overleaf project `name` into a new paper directory."""
     dest = _dest(name, dest)
     dest.mkdir(parents=True, exist_ok=True)
     sync.fetch_project(name, dest)
-    proj = _adopt(dest, name, code_dir)
+    proj = _adopt(dest, name, code_dir, verify)
     sync.snapshot_base(proj)  # Overleaf's text is the base; the packages below are a local edit
     added = preamble.ensure(proj.cfg.main_path)
     if added:
@@ -187,7 +187,7 @@ def pull_existing(name: str, dest: Path | None = None, code_dir: str = "") -> Pa
     return dest
 
 
-def create_blank(name: str, dest: Path | None = None, code_dir: str = "") -> Path:
+def create_blank(name: str, dest: Path | None = None, code_dir: str = "", verify: bool = True) -> Path:
     """Create an Overleaf project and a local paper with a starter main.tex, synced both ways."""
     dest = _dest(name, dest)
     overleaf.create(name)
@@ -199,7 +199,7 @@ def create_blank(name: str, dest: Path | None = None, code_dir: str = "") -> Pat
         if f.name != stage.name and not f.name.startswith("."):
             (shutil.copytree if f.is_dir() else shutil.copy)(f, stage / f.name)
     (dest / "main.tex").write_text(BLANK_PAPER % {"title": name})
-    proj = _adopt(dest, name, code_dir)
+    proj = _adopt(dest, name, code_dir, verify)
     preamble.ensure(proj.cfg.main_path)
     base = proj.dir / "base"
     if base.exists():

@@ -404,3 +404,18 @@ A paper without `--code-dir` gets an `analysis/` directory for its code, kept ou
 Setting a paper up (`redline init`, `redline full new`, the first `redline open`) also adds what the markup
 needs to the preamble if missing: the `changes` package and a `\providecommand{\chcomment}{\comment}` alias
 (`changes` only defines `\chcomment` when another package already owns `\comment`).
+
+## Turning refcheck off for a project
+
+Refcheck is on by default: new citations need evidence from the cited paper's PDF (checked against Zotero) and
+leave a `% VERIFIED` line. A project that is not about cited literature turns it off **at creation**
+(`redline init --no-verification`, answering `n` when `redline init` asks, `redline full new NAME --no-verification`,
+or `n` in the new-paper dialog of `redline full`), and can change it later: `redline verification on|off|status`
+(it is `enforce_verification` in `.redline.toml`). Off means citations need no evidence, `plain_edit` may add them
+and lint stays quiet; `% VERIFY` requests you write yourself are still answered. Agents are told never to change it.
+
+## Approving everything at once
+
+`gA` in review mode (`:Redline acceptallforce`), `A` in the `redline full` quick menu / paper list, and
+`redline accept --all --ignore-markers` accept every edit whatever its `%Y/%N/%X` marker says. They all show how many
+`%N`/`%X` they will override and ask first (`--yes` skips the CLI question). Standalone comments stay; undo works.

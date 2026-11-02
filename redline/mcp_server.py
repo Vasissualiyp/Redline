@@ -1,6 +1,8 @@
 """MCP server: safe, tracked edits to the paper for any agent."""
 from __future__ import annotations
 
+import re
+
 from typing import Any
 
 from mcp.server.mcpserver import Context, MCPServer
@@ -37,7 +39,8 @@ reject every suggestion from their editor. Rules:
   the outcome with record_verification, so a `% VERIFIED/REFUTED/UNVERIFIED id` line is
   left; a check that leaves no such line did not happen. A paper named by author and year
   in a quote is also checked against the source's reference list (for_key), and any paper
-  you cite that Zotero lacks is pulled with its PDF automatically. Only when the human explicitly
+  you cite that Zotero lacks is pulled with its PDF automatically. Whether this applies is the
+  human's setting (enforce_verification in .redline.toml): never change it yourself. Only when the human explicitly
   says not to check, pass unchecked_reason (the result is marked % UNVERIFIED). lint()
   flags new citations that have no result line.
 - Pending changes are addressed by id (stable hash like a3f9c2) or label (C12;
@@ -66,7 +69,26 @@ reject every suggestion from their editor. Rules:
   % VERIFIED/REFUTED/UNVERIFIED lines by hand.
 """
 
-mcp = MCPServer(name="redline", instructions=INSTRUCTIONS)
+VERIFICATION_OFF = """\
+- Reference checking is OFF for this paper (enforce_verification = false in .redline.toml):
+  citations need no evidence and leave no result line, plain_edit may add them, lint does not
+  flag them. `% VERIFY` requests from the human are still answered with record_verification().
+"""
+
+
+def instructions() -> str:
+    """The server instructions; the refcheck rule is replaced when this paper turns it off."""
+    try:
+        from . import config
+        if not config.load().enforce_verification:
+            return re.sub(r"- REFCHECK IS MANDATORY\..*?(?=- Pending changes)", lambda m: VERIFICATION_OFF,
+                          INSTRUCTIONS, flags=re.S)
+    except Exception:
+        pass
+    return INSTRUCTIONS
+
+
+mcp = MCPServer(name="redline", instructions=instructions())
 _service: Service | None = None
 
 

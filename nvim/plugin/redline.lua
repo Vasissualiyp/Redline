@@ -14,6 +14,7 @@ local subcommands = {
   push = function() require("redline.review").push() end,
   pull = function() require("redline.review").pull() end,
   acceptall = function() require("redline.review").accept_all() end,
+  acceptallforce = function() require("redline.review").accept_all_unmarked() end,
   sync = function() require("redline.sync").sync() end,
   close = function() require("redline.sync").close() end,
   quit = function() require("redline.quit").quit() end,

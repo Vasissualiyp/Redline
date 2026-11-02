@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -60,12 +61,18 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--pull", action="store_true", help="new: pull the existing Overleaf project of this name")
     p.add_argument("--dir", help="new: directory for the paper (default: next to your other papers)")
     p.add_argument("--code-dir", default="", help="new: analysis code directory (default: analysis/ inside the paper)")
+    p.add_argument("--no-verification", action="store_true", help="new: not a project whose citations are refchecked")
     p.add_argument("--json", action="store_true")
     p.add_argument("--no-attach", action="store_true", help="open: start the session without attaching")
 
     p = sub.add_parser("init", help="create .redline.toml, ignore entries and the Overleaf merge base")
     p.add_argument("--code-dir", default="", help="analysis/plotting code directory")
     p.add_argument("--no-sync", action="store_true", help="skip downloading the Overleaf base")
+    p.add_argument("--no-verification", action="store_true",
+                   help="this project does not cite papers that must be refchecked against Zotero")
+
+    p = sub.add_parser("verification", help="refcheck enforcement for this paper: status | on | off")
+    p.add_argument("state", nargs="?", choices=["on", "off", "status"], default="status")
 
     sub.add_parser("outline", help="sections with pending-change counts")
     sub.add_parser("status", help="counts as JSON")
@@ -79,7 +86,8 @@ def main(argv: list[str] | None = None) -> int:
         p = sub.add_parser(name, help=hlp)
         _add_selector(p)
         p.add_argument("--comments", choices=["auto", "keep", "drop"], default="auto")
-        p.add_argument("--ignore-markers", action="store_true")
+        p.add_argument("--ignore-markers", action="store_true", help="decide by the command, not by %%Y/%%N/%%X")
+        p.add_argument("--yes", action="store_true", help="with --ignore-markers: do not ask first")
 
     p = sub.add_parser("lint", help="check markup that breaks the build")
     p.add_argument("--fix", action="store_true")
@@ -197,7 +205,7 @@ def _full_cmd(a: argparse.Namespace) -> int:
         return 2
     dest = Path(a.dir) if a.dir else None
     make = registry.pull_existing if a.pull else registry.create_blank
-    path = make(a.name, dest, a.code_dir)
+    path = make(a.name, dest, a.code_dir, not a.no_verification)
     print(f"{'pulled' if a.pull else 'created'}: {path}\nopen it with: redline full open {path.name!r}")
     return 0
 
@@ -260,11 +268,25 @@ def _run(a: argparse.Namespace) -> int:
         win = L.find_window(a.session) if a.session else None
         print(L.cycle(-1 if a.prev else 1, win) if (a.next or a.prev) else L.apply(a.name, win))
         return 0
+    if a.cmd == "verification":
+        from . import config
+        root = config.find_root()
+        path = config.write_default(root)
+        if a.state != "status":
+            path = config.set_verification(root, a.state == "on")
+        print("refcheck enforcement: " + ("on" if config.load(root).enforce_verification else "off")
+              + f"  ({path})")
+        return 0
     if a.cmd == "init":
         from . import sync
         root = config.find_root()
-        path = config.write_default(root, a.code_dir)
-        print(f"config: {path}")
+        verify = not a.no_verification
+        if verify and not (root / config.CONFIG_NAME).exists() and sys.stdin.isatty():
+            verify = input("Check every citation against Zotero (refcheck, the default)? "
+                           "Say n only if this project is not about cited literature. [Y/n] "
+                           ).strip().lower() not in ("n", "no")
+        path = config.write_default(root, a.code_dir, enforce_verification=verify)
+        print(f"config: {path}" + ("" if verify else "  (refcheck enforcement OFF; `redline verification on` re-enables)"))
         changed = sync.ensure_ignores(root)
         if changed:
             print("added redline entries to " + ", ".join(changed))
@@ -321,6 +343,15 @@ def _run(a: argparse.Namespace) -> int:
         sel = _selector(a)
         if a.cmd == "markers" and not sel:
             sel = {"all": True}
+        if a.ignore_markers and not a.yes:
+            from . import select as _sel
+            doc = proj.doc()
+            items = _sel.select(doc, sel, proj.origins())
+            noted = sum(1 for i in items if i.marker and i.marker.kind in "NX")
+            ask = (f"{a.cmd} {len(items)} change(s), ignoring {noted} %N/%X marker(s)? [y/N] ")
+            if not sys.stdin.isatty() or input(ask).strip().lower() != "y":
+                print("not applied (confirm interactively, or pass --yes)")
+                return 1
         print(s.resolve(a.cmd, sel, a.comments, honor_markers=not a.ignore_markers))
     elif a.cmd == "lint":
         out = s.lint(a.fix)

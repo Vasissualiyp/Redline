@@ -152,7 +152,7 @@ def split_change(src: str, ch: Change) -> str | None:
     return None
 
 
-def lint(doc: Document) -> list[Issue]:
+def lint(doc: Document, enforce_verification: bool = True) -> list[Issue]:
     src = doc.src
     masked, _, _ = mask(src)
     issues: list[Issue] = []
@@ -166,7 +166,7 @@ def lint(doc: Document) -> list[Issue]:
         issues.append(Issue("merge-conflict", "error", doc.line_of(m.start()),
                             "unresolved merge conflict marker"))
 
-    for ch in doc.items:
+    for ch in (doc.items if enforce_verification else []):
         miss = _verify.unverified_citations(doc, ch)
         if miss:
             issues.append(Issue("unverified-citation", "warning", ch.line_start,

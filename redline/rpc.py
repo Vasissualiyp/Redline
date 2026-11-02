@@ -76,7 +76,7 @@ class Rpc:
                          for s in doc.sections],
             "orphan_markers": [{"line": m.line, "kind": m.kind, "note": m.note}
                                for m in doc.markers if m.item is None],
-            "lint": [i.as_dict() for i in lint.lint(doc)],
+            "lint": [i.as_dict() for i in lint.lint(doc, self.proj.cfg.enforce_verification if self.proj else True)],
             "verify": [r.as_dict() for r in verify.requests(doc)],
             "results": [r.as_dict() for r in verify.results(doc)],
         }
