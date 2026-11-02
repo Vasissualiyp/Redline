@@ -419,3 +419,12 @@ and lint stays quiet; `% VERIFY` requests you write yourself are still answered.
 `gA` in review mode (`:Redline acceptallforce`), `A` in the `redline full` quick menu / paper list, and
 `redline accept --all --ignore-markers` accept every edit whatever its `%Y/%N/%X` marker says. They all show how many
 `%N`/`%X` they will override and ask first (`--yes` skips the CLI question). Standalone comments stay; undo works.
+
+## Progress indicators
+
+Anything slow shows an animated spinner (⠋⠙⠹…): in `redline full` a yellow bar above the log and a Status cell on the
+paper's row (compile, pull, push, reading papers/changes, starting the tmux session, sending to the agent), a placeholder
+row for a paper being created or pulled, "rendering the page…" in the picture pane, and "loading the Overleaf project
+list…" in the new-paper dialog. A job that ends at once still shows for ~0.8 s. In nvim the statusline's mode label
+animates while compiling (auto or manual) or syncing with Overleaf. On the command line `redline compile`,
+`redline init` and `redline full new` show a spinner on stderr (only on a terminal).

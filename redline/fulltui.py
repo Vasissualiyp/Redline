@@ -66,6 +66,8 @@ class PagePreview(Widget):
         self.note = ""
         self.placed: str | None = None
         self.ticket = 0
+        self.rendering = False
+        self.frame = 0
 
     def graphics_ok(self) -> bool:
         term = os.environ.get("TERM", "")
@@ -73,7 +75,7 @@ class PagePreview(Widget):
                     and ("kitty" in term or os.environ.get("KITTY_WINDOW_ID") or os.environ.get("TMUX")))
 
     def clear(self, why: str = "") -> None:
-        self.job, self.note, self.placed = None, why, None
+        self.job, self.note, self.placed, self.rendering = None, why, None, False
         self.ticket += 1
         self.refresh()
 
@@ -81,6 +83,7 @@ class PagePreview(Widget):
         if self.job and self.job[0] == key and self.placed:
             return
         self.job, self.note, self.placed = (key, fn), "", None
+        self.rendering = self.graphics_ok()
         self.refresh()
         if self.graphics_ok():
             self.ticket += 1
@@ -132,12 +135,12 @@ class PagePreview(Widget):
 
     def place(self, ticket: int, key: str) -> None:
         if ticket == self.ticket:
-            self.placed = key
+            self.placed, self.rendering = key, False
             self.refresh()
 
     def nothing(self, ticket: int, why: str) -> None:
         if ticket == self.ticket:
-            self.note = why
+            self.note, self.rendering = why, False
             self.refresh()
 
     def render_line(self, y: int) -> Strip:
@@ -151,6 +154,9 @@ class PagePreview(Widget):
                 return Strip([Segment(text, Style.parse(f"rgb({r},{g},{b})")), Segment(" " * (w - cols))])
             return Strip.blank(w)
         if y == 0:
+            if self.rendering and not self.note:
+                spin = Full.SPIN[self.frame % len(Full.SPIN)]
+                return Strip([Segment(f"{spin} rendering the page…"[:w].ljust(w), Style.parse("bold yellow"))])
             msg = self.note or ("page preview needs a kitty terminal" if self.job else "")
             return Strip([Segment(msg[:w].ljust(w), Style(dim=True))])
         return Strip.blank(w)
@@ -236,9 +242,18 @@ class NewPaper(ModalScreen):
     def on_mount(self) -> None:
         self.remote: list[dict] = []
         self.shown: list[dict] = []
-        self.query_one("#remote", OptionList).add_option("loading the Overleaf project list...")
+        self.query_one("#remote", OptionList).add_option("⠋ loading the Overleaf project list...")
         self.query_one("#remote").disabled = True
+        self.spin = 0
+        self.timer = self.set_interval(0.12, self.animate)
         self.fetch()
+
+    def animate(self) -> None:
+        if self.remote or not self.query_one("#remote").disabled:
+            return
+        self.spin += 1
+        self.query_one("#remote", OptionList).replace_option_prompt_at_index(
+            0, f"[b yellow]{Full.SPIN[self.spin % len(Full.SPIN)]}[/] loading the Overleaf project list...")
 
     @work(thread=True)
     def fetch(self) -> None:
@@ -252,6 +267,8 @@ class NewPaper(ModalScreen):
     def show(self, err: str = "") -> None:
         lst = self.query_one("#remote", OptionList)
         lst.disabled = False
+        if getattr(self, "timer", None):
+            self.timer.stop()
         lst.clear_options()
         local = {p.name for p in registry.scan()}
         want = self.query_one("#name", Input).value.strip().lower()
@@ -365,6 +382,7 @@ class Full(App):
     #cdetail { height: 12; overflow-y: auto; }
     #log { height: 7; border-top: solid $primary; }
     #search { display: none; dock: bottom; }
+    #busy { display: none; height: 1; padding: 0 1; }
     #cscroll { display: none; height: 1fr; }
     #changes-view.textmode #changes { width: 2fr; }
     #changes-view.textmode .side { width: 3fr; }
@@ -388,6 +406,10 @@ class Full(App):
         self.compiled_for = 0.0       # ... and the one the last compile ran on
         self.compiling = False
         self.compile_timer = None
+        self.jobs: dict[str, str] = {}          # running work: key -> what it is doing
+        self.started: dict[str, float] = {}
+        self.placeholders: dict[str, str] = {}  # papers being created or pulled: name -> label
+        self.frame = 0
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -404,17 +426,22 @@ class Full(App):
                     yield PagePreview(id="cpage")
                     with VerticalScroll(id="cscroll"):
                         yield Static(id="cctx")
+        yield Static(id="busy")
         yield Input(placeholder="/ search (enter keeps the filter, esc clears)", id="search")
         yield RichLog(id="log", wrap=True, markup=False)
         yield Footer()
 
     def on_mount(self) -> None:
-        self.query_one("#papers", DataTable).add_columns("Paper", "Pending", "Unrated", "Overleaf", "tmux", "Active")
+        t = self.query_one("#papers", DataTable)
+        for label, key in (("Paper", "paper"), ("Pending", "pending"), ("Unrated", "unrated"), ("Overleaf", "sync"),
+                           ("tmux", "tmux"), ("Active", "active"), ("Status", "status")):
+            t.add_column(label, key=key)
         self.query_one("#changes", DataTable).add_columns("#", "Kind", "Section", "Line", "Mark", "Text")
         self.query_one("#papers").focus()
         self.text_view = not self.query_one("#cpage", PagePreview).graphics_ok()
         self.apply_view()
         self.set_interval(4.0, self.watch)
+        self.set_interval(0.15, self.tick)
         self.action_refresh()
 
     # ---- levels --------------------------------------------------------------------
@@ -519,6 +546,50 @@ class Full(App):
     def matches(query: str, text: str) -> bool:
         return all(w in text.lower() for w in query.lower().split())
 
+    # ---- showing that something is happening ---------------------------------------
+    SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+    def busy(self, key: str, label: str | None) -> None:
+        """Start (label) or finish (None) a job; safe to call from a worker thread."""
+        import threading
+        if threading.current_thread() is not threading.main_thread():
+            return self.call_from_thread(self.busy, key, label)
+        import time
+        if label is not None:
+            self.jobs[key] = label
+            self.started[key] = time.monotonic()
+            return self.tick()
+        left = 0.8 - (time.monotonic() - self.started.get(key, 0.0))
+        if left > 0 and key in self.jobs:  # a job that ends at once still shows, so the key press visibly did something
+            self.set_timer(left, lambda: self.busy(key, None))
+            return
+        self.jobs.pop(key, None)
+        self.started.pop(key, None)
+        self.tick()
+        if any(key.startswith(k) for k in ("pull", "push", "compile")):
+            self.fill()  # the Status cell empties
+
+    def tick(self) -> None:
+        self.frame = (self.frame + 1) % len(self.SPIN)
+        spin = self.SPIN[self.frame]
+        for w in self.query(PagePreview):
+            if w.rendering:
+                w.frame = self.frame
+                w.refresh()
+        bar = self.query_one("#busy", Static)
+        labels = [*self.jobs.values(), *self.placeholders.values()]
+        bar.display = bool(labels)
+        if labels:
+            bar.update("[b black on yellow] " + spin + " " + "   ".join(escape(x) for x in labels) + " [/]")
+        t = self.query_one("#papers", DataTable)
+        for key, it in list(self.rows.items()):
+            job = next((v for k, v in self.jobs.items() if k.endswith(f":{key}")), "")
+            with contextlib.suppress(Exception):
+                t.update_cell(key, "status", f"[b yellow]{spin} {escape(job)}[/]" if job else "")
+        for name in self.placeholders:
+            with contextlib.suppress(Exception):
+                t.update_cell(f"ph:{name}", "status", f"[b yellow]{spin} {escape(self.placeholders[name])}[/]")
+
     # ---- the paper list --------------------------------------------------------------
     def action_refresh(self) -> None:
         if self.level == "changes":
@@ -527,7 +598,11 @@ class Full(App):
 
     @work(thread=True, exclusive=True, group="load")
     def load(self) -> None:
-        rows = registry.listing()
+        self.busy("load", "reading papers…")
+        try:
+            rows = registry.listing()
+        finally:
+            self.busy("load", None)
         self.call_from_thread(self.set_papers, rows)
 
     def set_papers(self, rows: list[registry.Info]) -> None:
@@ -539,13 +614,16 @@ class Full(App):
         keep = self.current_path()
         t.clear()
         self.rows = {}
+        for name, label in self.placeholders.items():  # a paper being created or pulled shows at once
+            if self.matches(self.queries["papers"], name):
+                t.add_row(f"[b yellow]{escape(name)}[/]", "", "", "", "", "", f"[b yellow]{label}[/]", key=f"ph:{name}")
         for it in self.all_papers:
             if not self.matches(self.queries["papers"], f"{it.name} {it.sync} {it.path}"):
                 continue
             self.rows[str(it.path)] = it
             sync = f"[{SYNC_STYLE.get(it.sync, 'red')}]{it.sync or 'error'}[/]"
             t.add_row(escape(it.name), _cell(it.pending), _cell(it.unrated, warn=True), sync,
-                      "[green]running[/]" if it.running else "[dim]-[/]", registry.ago(it.active),
+                      "[green]running[/]" if it.running else "[dim]-[/]", registry.ago(it.active), "",
                       key=str(it.path))
         if keep and keep in self.rows:
             t.move_cursor(row=t.get_row_index(keep))
@@ -577,6 +655,11 @@ class Full(App):
         it = self.selected()
         side = self.query_one("#detail", Static)
         page = self.query_one("#page", PagePreview)
+        cur = self.current_path()
+        if cur and cur.startswith("ph:"):
+            page.clear()
+            return side.update(f"[b yellow]{escape(cur[3:])}[/]\n\n{self.placeholders.get(cur[3:], '')} ...\n"
+                               "It appears in the list as soon as it is ready.")
         if not it:
             page.clear()
             side.update("No papers under " + ", ".join(str(r) for r in registry.roots())
@@ -605,6 +688,7 @@ class Full(App):
     def load_changes(self) -> None:
         from . import quick
         from .state import Project
+        self.busy("changes", "reading changes…")
         try:
             proj = Project.open(self.paper)
             rows, doc = quick.load(proj)
@@ -615,6 +699,8 @@ class Full(App):
         except RedlineError as e:
             self.call_from_thread(self.say, f"cannot read the paper: {e}")
             return
+        finally:
+            self.busy("changes", None)
         self.call_from_thread(self.set_changes, rows)
 
     def set_changes(self, rows: list[dict]) -> None:
@@ -737,6 +823,8 @@ class Full(App):
         from .state import Project
         self.compiling = True
         say = lambda s: self.call_from_thread(self.say, s)  # noqa: E731
+        key = f"compile:{root}"
+        self.busy(key, "compiling…")
         try:
             proj = Project.open(root)
             self.compiled_for = self.newest_tex()
@@ -753,6 +841,7 @@ class Full(App):
             say(f"compile failed: {e}")
         finally:
             self.compiling = False
+            self.busy(key, None)
         self.call_from_thread(self.show_change)
 
     # ---- deciding ----------------------------------------------------------------
@@ -765,12 +854,15 @@ class Full(App):
     @work(thread=True, group="decide")
     def decide(self, verb: str, root: Path, d: dict, fn) -> None:
         from .state import Project
+        self.busy("decide", f"{verb[:-2]}ing {d['label']}…")
         try:
             fn(Project.open(root), d["id"])
             self.call_from_thread(self.say, f"{verb} {d['label']} ({d['kind']}, l.{d['lines'][0]})   u undoes")
             self.call_from_thread(self.schedule_compile)
         except RedlineError as e:
             self.call_from_thread(self.say, f"{verb} failed: {e}")
+        finally:
+            self.busy("decide", None)
         self.call_from_thread(self.load_changes)
 
     def action_accept(self) -> None:
@@ -804,12 +896,15 @@ class Full(App):
     def bulk_accept(self, root: Path) -> None:
         from . import quick
         from .state import Project
+        self.busy("bulk", "accepting all edits…")
         try:
             out = quick.accept_all(Project.open(root))
             self.call_from_thread(self.say, "accepted all edits:\n" + out)
             self.call_from_thread(self.schedule_compile)
         except RedlineError as e:
             self.call_from_thread(self.say, f"accept all failed: {e}")
+        finally:
+            self.busy("bulk", None)
         self.call_from_thread(self.action_refresh)
 
     def action_reject(self) -> None:
@@ -858,11 +953,14 @@ class Full(App):
     @work(thread=True, group="session")
     def start_session(self, root: Path) -> None:
         from . import quick
+        self.busy(f"session:{root}", "starting the tmux session…")
         try:
             quick.ensure_session(root)
             self.call_from_thread(self.say, "background session is up")
         except RedlineError as e:
             self.call_from_thread(self.say, f"session failed: {e}")
+        finally:
+            self.busy(f"session:{root}", None)
 
     @work(thread=True, group="send")
     def send(self, how: str, root: Path, d: dict, text: str) -> None:
@@ -878,7 +976,11 @@ class Full(App):
             else:
                 msg = quick.chat_message(Project.open(root).cfg.project_name, text)
             say("waiting for the agent ..." if not quick.alive(root) else "sending ...")
-            name = quick.send_to_agent(root, msg)
+            self.busy(f"send:{root}", "sending to the agent…")
+            try:
+                name = quick.send_to_agent(root, msg)
+            finally:
+                self.busy(f"send:{root}", None)
             say(f"sent to the agent in {name}; read the answer there (enter opens it)")
         except RedlineError as e:
             say(f"not sent: {e}")
@@ -926,7 +1028,11 @@ class Full(App):
                 return
 
             def ask(yes: bool | None) -> None:
-                self.make(*res, verify=bool(yes))
+                how, name = res
+                self.placeholders[name] = "creating on Overleaf" if how == "new" else "pulling from Overleaf"
+                self.fill()
+                self.tick()
+                self.make(how, name, verify=bool(yes))
             self.push_screen(Confirm("Check every citation in this paper against Zotero (refcheck)?\n"
                                      "[b]y[/] yes (default for papers)   [b]n[/] no: not a project about cited literature"), ask)
         self.push_screen(NewPaper(), done)
@@ -940,7 +1046,13 @@ class Full(App):
             say(f"ready: {dest}")
         except RedlineError as e:
             say(f"failed: {e}")
-        self.call_from_thread(self.action_refresh)
+        self.call_from_thread(self.finish_placeholder, name)
+
+    def finish_placeholder(self, name: str) -> None:
+        """The paper is on disk: replace the placeholder with the real row (after a rescan)."""
+        self.placeholders.pop(name, None)
+        self.tick()
+        self.load()
 
     def _job(self, label: str, fn) -> None:
         root = self.paper if self.level == "changes" else (self.selected().path if self.selected() else None)
@@ -951,11 +1063,15 @@ class Full(App):
     def run_job(self, label: str, root: Path, fn) -> None:
         say = lambda s: self.call_from_thread(self.say, s)  # noqa: E731
         say(f"{label} {root.name} ...")
+        key = f"{label}:{root}"
+        self.busy(key, {"pull": "pulling", "push": "pushing", "compile": "compiling"}.get(label, label) + "…")
         try:
             from .state import Project
             say(fn(Project.open(root)))
         except RedlineError as e:
             say(f"{label} failed: {e}")
+        finally:
+            self.busy(key, None)
         self.call_from_thread(self.action_refresh)
 
     def action_pull(self) -> None:

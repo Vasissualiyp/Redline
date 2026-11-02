@@ -31,8 +31,9 @@ local function fire()
     return
   end
   state.running = true
-  vim.cmd("redrawstatus")
+  local stop_spin = require("redline.spinner").start("TeX")
   require("redline.review").compile(function(res)
+    stop_spin()
     state.running = false
     if res then
       local nerr = #(res.errors or {})

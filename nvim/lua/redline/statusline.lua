@@ -36,6 +36,10 @@ end
 --- What lightline's mode component shows (called from the statusline).
 function M.lightline_label()
   local tex = M.in_review() and require("redline.autocompile").status() or ""
+  local busy = require("redline.spinner").label()
+  if busy ~= "" then
+    tex = busy -- an animated job (compile, sync) replaces the static TeX status
+  end
   return (M.mode() or vim.fn["lightline#mode"]()) .. (tex ~= "" and (" " .. tex) or "")
 end
 

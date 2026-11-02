@@ -395,8 +395,10 @@ function M.compile(cb, opts)
   if not opts.quiet then
     vim.notify("redline: compiling…")
   end
+  local stop_spin = require("redline.spinner").start("compiling")
   vim.system(rpc.shell("compile --json"), { cwd = st.root, text = true, env = { REDLINE_ROOT = st.root } },
     vim.schedule_wrap(function(r)
+      stop_spin()
       local ok, res = pcall(vim.json.decode, r.stdout or "", { luanil = { object = true, array = true } })
       if not ok or type(res) ~= "table" then
         if not opts.quiet then
@@ -457,8 +459,10 @@ local function sync(action, confirm_msg)
   end
   core.flush()
   vim.notify("redline: " .. action .. "…")
+  local stop_spin = require("redline.spinner").start(action == "push" and "pushing" or "pulling")
   vim.system(rpc.shell("sync " .. action), { cwd = st.root, text = true, env = { REDLINE_ROOT = st.root } },
     vim.schedule_wrap(function(r)
+      stop_spin()
       local out = ((r.stdout or "") .. (r.stderr or "")):gsub("%s+$", "")
       vim.notify("redline " .. action .. ":\n" .. out, r.code == 0 and vim.log.levels.INFO or vim.log.levels.WARN)
       core.reload()

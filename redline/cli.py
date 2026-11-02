@@ -205,7 +205,9 @@ def _full_cmd(a: argparse.Namespace) -> int:
         return 2
     dest = Path(a.dir) if a.dir else None
     make = registry.pull_existing if a.pull else registry.create_blank
-    path = make(a.name, dest, a.code_dir, not a.no_verification)
+    from .spin import spinning
+    with spinning(("pulling " if a.pull else "creating ") + a.name):
+        path = make(a.name, dest, a.code_dir, not a.no_verification)
     print(f"{'pulled' if a.pull else 'created'}: {path}\nopen it with: redline full open {path.name!r}")
     return 0
 
@@ -299,7 +301,10 @@ def _run(a: argparse.Namespace) -> int:
         from .launcher import write_mcp_config
         print("mcp config: " + write_mcp_config(proj))
         if not a.no_sync:
-            print(sync.init_base(proj).text())
+            from .spin import spinning
+            with spinning("downloading the Overleaf project"):
+                rep = sync.init_base(proj)
+            print(rep.text())
         return 0
 
     from .state import Project
@@ -359,7 +364,9 @@ def _run(a: argparse.Namespace) -> int:
         return 1 if "ERROR" in out else 0
     elif a.cmd == "compile":
         from . import compile as C
-        res = C.run(proj, isolate=a.isolate)
+        from .spin import spinning
+        with spinning("compiling"):
+            res = C.run(proj, isolate=a.isolate)
         print(json.dumps(res.as_dict()) if a.json else C.format_report(res))
         return 0 if res.ok else 1
     elif a.cmd == "sync":

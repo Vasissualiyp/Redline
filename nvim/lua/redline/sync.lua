@@ -84,6 +84,7 @@ local function run(args, visible, on_exit)
       end
     end)
   end
+  local stop_spin = require("redline.spinner").start(args:match("^sync push") and "pushing" or "syncing")
   vim.fn.jobstart(rpc.shell(args), {
     cwd = st.root,
     env = { REDLINE_ROOT = st.root },
@@ -91,6 +92,7 @@ local function run(args, visible, on_exit)
     on_stderr = on_data,
     on_exit = function(_, code)
       vim.schedule(function()
+        stop_spin()
         core.reload()
         if on_exit then
           on_exit(code, table.concat(collected, "\n"):gsub("%s+$", ""))
@@ -128,8 +130,10 @@ function M.sync()
   end
   core.flush()
   vim.notify("redline: checking Overleaf…")
+  local stop_spin = require("redline.spinner").start("checking Overleaf")
   vim.system(rpc.shell("sync check --json"), { cwd = st.root, text = true, env = { REDLINE_ROOT = st.root } },
     vim.schedule_wrap(function(r)
+      stop_spin()
       local ok, chk = pcall(vim.json.decode, r.stdout or "", { luanil = { object = true, array = true } })
       if not ok or type(chk) ~= "table" then
         return vim.notify("redline sync: " .. ((r.stderr or "") .. (r.stdout or "")), vim.log.levels.ERROR)
