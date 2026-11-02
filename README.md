@@ -381,8 +381,16 @@ redline full open NAME       # start (or attach to) the paper's tmux workspace
 
 Papers are the directories under `roots` (default `~/Software/Overleaf-nix-flake`) that have a
 `.redline.toml`; set `roots` and `papers_dir` (where new papers go) in `~/.config/redline/config.toml`.
-In the TUI: `enter` open, `n` new or pull, `p` pull, `P` push (asks first), `c` compile, `r` refresh, `q` quit.
-Accepting and rejecting stays inside a paper's workspace.
+The TUI moves like vim: `j k gg G H M L ctrl-d ctrl-u ctrl-e ctrl-y`, `/` filters (enter keeps the filter, esc clears).
+Papers carry the name they have on Overleaf. Papers: `enter`/`o` open the tmux workspace, `l` review its changes,
+`n` new (type to filter your Overleaf projects, enter pulls the highlighted one, ctrl+o creates a new project after asking),
+`p` pull, `P` push (asks first), `c` compile, `r` refresh, `q` quit.
+
+**Quick menu** (`l` on a paper, `h` back): every pending change with the PDF page that holds it, highlighted.
+`a` accept, `x` reject (journaled, `u` undoes), `n` note for the agent (kept pending as `%N`; the agent revises it),
+`d` ask the agent without editing, `enter` opens the editor at the change, `c` compile. The agent is the one in the
+paper's tmux session: it is started in the background when you begin writing a message (the list shows it as
+running) and reused afterwards. The PDF is the last clean build, so recompile (`c`) after accepting to refresh it.
 The right side shows the first page of the highlighted paper's last build (kitty graphics, like the PDF pane;
 `REDLINE_PREVIEW=0` turns it off), so papers are recognisable at a glance. Papers never compiled say so; press `c`.
 

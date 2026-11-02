@@ -1,8 +1,9 @@
-"""`redline full`: every paper in one full-screen list (Textual).
+"""`redline full`: every paper in one full-screen list (Textual), with vim motions.
 
-enter/o open the paper's tmux workspace   n new paper (create, or pull from Overleaf)
-p pull from Overleaf   P push to Overleaf   c compile   r refresh   q quit
-Accepting and rejecting changes stays inside a paper's own workspace.
+Papers:   j k gg G ctrl-d ctrl-u ctrl-e ctrl-y H M L move, / filters, l reviews the paper's changes,
+          enter/o opens its tmux workspace, n new paper, p pull, P push, c compile, r refresh, q quit
+Changes:  the same motions; a accept, x reject, n note for the agent (stays pending as %N),
+          d ask the agent, u undo, enter opens the editor at the change, c compile, h back
 """
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.widgets import ContentSwitcher
 from textual.screen import ModalScreen
 from textual.strip import Strip
 from textual.widget import Widget
@@ -51,14 +53,16 @@ class _DriverOut:
 
 
 class PagePreview(Widget):
-    """First page of the selected paper, drawn with kitty graphics (unicode placeholders)."""
+    """A picture drawn with kitty graphics (unicode placeholders): a paper's first page, or the
+    PDF page holding a change. `show_job` takes a key (same key = same picture) and a function
+    (pixel width, pixel height) -> PIL image, or a string saying why there is none."""
 
     DEFAULT_CSS = "PagePreview { height: 1fr; }"
 
     def __init__(self, **kw):
         super().__init__(**kw)
         self.gfx: kittygfx.Kitty | None = None
-        self.pdf: Path | None = None
+        self.job: tuple[str, object] | None = None
         self.note = ""
         self.placed: str | None = None
         self.ticket = 0
@@ -68,36 +72,50 @@ class PagePreview(Widget):
         return bool(os.environ.get("REDLINE_PREVIEW", "1") != "0"
                     and ("kitty" in term or os.environ.get("KITTY_WINDOW_ID") or os.environ.get("TMUX")))
 
-    def show_pdf(self, pdf: Path | None, why: str = "") -> None:
-        self.pdf, self.note = pdf, why
-        self.placed = None
+    def clear(self, why: str = "") -> None:
+        self.job, self.note, self.placed = None, why, None
+        self.ticket += 1
         self.refresh()
-        if pdf and self.graphics_ok():
+
+    def show_job(self, key: str, fn) -> None:
+        if self.job and self.job[0] == key and self.placed:
+            return
+        self.job, self.note, self.placed = (key, fn), "", None
+        self.refresh()
+        if self.graphics_ok():
             self.ticket += 1
-            self.draw(self.ticket, pdf)
+            self.draw(self.ticket, key, fn)
+
+    def show_pdf(self, pdf: Path | None, why: str = "") -> None:
+        if pdf is None:
+            return self.clear(why or "no PDF yet: press c to compile")
+        self.show_job(f"{pdf}:{pdf.stat().st_mtime_ns}", lambda w, h: thumb.first_page(pdf, w) or "cannot render the PDF")
 
     def on_resize(self) -> None:
-        if self.pdf and self.graphics_ok():
+        if self.job and self.graphics_ok():
             self.ticket += 1
-            self.draw(self.ticket, self.pdf)
+            self.draw(self.ticket, *self.job)
 
     @work(thread=True, exclusive=True, group="thumb")
-    def draw(self, ticket: int, pdf: Path) -> None:
+    def draw(self, ticket: int, key0: str, fn) -> None:
         import time
-        time.sleep(0.15)  # scrolling through the list: only the paper you stop on is drawn
+        time.sleep(0.15)  # scrolling through a list: only the item you stop on is drawn
         if ticket != self.ticket:
             return
         cols, rows = self.size.width, self.size.height
         if cols < 4 or rows < 3:
             return
         cw, ch = thumb.cell_px()
-        key = f"{pdf}:{pdf.stat().st_mtime_ns}:{cols}x{rows}"
+        key = f"{key0}:{cols}x{rows}"
         if self.gfx and self.gfx.has(key):
             self.app.call_from_thread(self.place, ticket, key)
             return
-        img = thumb.first_page(pdf, cols * cw)
-        if img is None:
-            self.app.call_from_thread(self.nothing, ticket, "cannot render the PDF")
+        try:
+            img = fn(cols * cw, rows * ch)
+        except Exception as e:  # a broken PDF must not take the list down
+            img = f"preview failed: {e}"
+        if isinstance(img, str) or img is None:
+            self.app.call_from_thread(self.nothing, ticket, img or "cannot render the PDF")
             return
         c, r = thumb.fit(img.width / img.height, cols, rows, cw, ch)
         img = img.resize((c * cw, r * ch))
@@ -133,8 +151,7 @@ class PagePreview(Widget):
                 return Strip([Segment(text, Style.parse(f"rgb({r},{g},{b})")), Segment(" " * (w - cols))])
             return Strip.blank(w)
         if y == 0:
-            msg = self.note or ("no PDF yet: press c to compile" if not self.pdf else
-                                "page preview needs a kitty terminal")
+            msg = self.note or ("page preview needs a kitty terminal" if self.job else "")
             return Strip([Segment(msg[:w].ljust(w), Style(dim=True))])
         return Strip.blank(w)
 
@@ -143,26 +160,82 @@ class PagePreview(Widget):
             self.gfx.forget()
 
 
-class NewPaper(ModalScreen):
-    """Type a name to create a paper (and its Overleaf project), or pick an Overleaf project to pull."""
+class VimTable(DataTable):
+    """A DataTable with vim motions: j k gg G ctrl-d ctrl-u ctrl-e ctrl-y H M L."""
 
-    BINDINGS = [Binding("escape", "dismiss(None)", "Cancel")]
+    BINDINGS = [
+        Binding("j", "cursor_down", show=False), Binding("k", "cursor_up", show=False),
+        Binding("G", "last", show=False), Binding("g", "g", show=False),
+        Binding("ctrl+d", "half(1)", show=False), Binding("ctrl+u", "half(-1)", show=False),
+        Binding("ctrl+e", "scroll_line(1)", show=False), Binding("ctrl+y", "scroll_line(-1)", show=False),
+        Binding("H", "screen_row('top')", show=False), Binding("M", "screen_row('middle')", show=False),
+        Binding("L", "screen_row('bottom')", show=False),
+    ]
+    _g = 0.0
+
+    def _row(self, row: int) -> None:
+        if self.row_count:
+            self.move_cursor(row=max(0, min(self.row_count - 1, row)))
+
+    def action_g(self) -> None:
+        import time
+        if time.monotonic() - self._g < 0.8:
+            self._g = 0.0
+            self._row(0)
+        else:
+            self._g = time.monotonic()
+
+    def action_last(self) -> None:
+        self._row(self.row_count - 1)
+
+    def _page(self) -> int:
+        return max(1, self.size.height - (1 if self.show_header else 0))
+
+    def action_half(self, sign: int) -> None:
+        self._row(self.cursor_row + sign * max(1, self._page() // 2))
+
+    def _top(self) -> int:
+        return max(0, int(self.scroll_y))
+
+    def action_scroll_line(self, sign: int) -> None:
+        """Scroll the view one line; the cursor moves only if it would leave the screen."""
+        top = max(0, min(self.row_count - 1, self._top() + sign))
+        self.scroll_to(y=top, animate=False)
+        bottom = top + self._page() - 1
+        if self.cursor_row < top:
+            self._row(top)
+        elif self.cursor_row > bottom:
+            self._row(bottom)
+
+    def action_screen_row(self, where: str) -> None:
+        top = self._top()
+        last = min(self.row_count - 1, top + self._page() - 1)
+        self._row({"top": top, "bottom": last, "middle": (top + last) // 2}[where])
+
+
+class NewPaper(ModalScreen):
+    """Pull an Overleaf project (type to filter, enter pulls the highlighted one), or create a new one."""
+
+    BINDINGS = [Binding("escape", "dismiss(None)", "Cancel"),
+                Binding("down,ctrl+n,ctrl+j", "move(1)", show=False), Binding("up,ctrl+p,ctrl+k", "move(-1)", show=False),
+                Binding("ctrl+o", "create", "Create new")]
     CSS = """
     NewPaper { align: center middle; }
-    #box { width: 80; height: 80%; border: round $accent; background: $surface; padding: 1 2; }
+    #box { width: 90; height: 80%; border: round $accent; background: $surface; padding: 1 2; }
     #box OptionList { height: 1fr; margin-top: 1; }
     """
 
     def compose(self) -> ComposeResult:
         with Vertical(id="box"):
-            yield Label("[b]New paper[/]  type a name and press enter to [b]create[/] it on Overleaf and here;\n"
-                        "or choose an existing Overleaf project below to [b]pull[/] it.")
-            yield Input(placeholder="New paper name (typing also filters the list)", id="name")
+            yield Label("[b]Pull from Overleaf[/]: type to filter, [b]enter[/] pulls the highlighted project (up/down move).\n"
+                        "[b]ctrl+o[/] creates a [b]new[/] Overleaf project named like the text you typed (asks first).")
+            yield Input(placeholder="Overleaf project name", id="name")
             yield OptionList(id="remote")
             yield Label("esc cancels", id="hint")
 
     def on_mount(self) -> None:
         self.remote: list[dict] = []
+        self.shown: list[dict] = []
         self.query_one("#remote", OptionList).add_option("loading the Overleaf project list...")
         self.query_one("#remote").disabled = True
         self.fetch()
@@ -189,6 +262,8 @@ class NewPaper(ModalScreen):
             lst.add_option(f"{escape(name):44}  [dim]{overleaf.pretty(p['updated'])}[/]{mark}")
         if err:
             lst.add_option(f"[red]{escape(err)}[/]")
+        elif not self.shown and want:
+            lst.add_option(f"[dim]no Overleaf project matches; ctrl+o creates {escape(repr(want))}[/]")
         if self.shown:
             lst.highlighted = 0
 
@@ -196,14 +271,54 @@ class NewPaper(ModalScreen):
         if self.remote:
             self.show()
 
+    def action_move(self, step: int) -> None:
+        lst = self.query_one("#remote", OptionList)
+        if self.shown:
+            lst.highlighted = max(0, min(len(self.shown) - 1, (lst.highlighted or 0) + step))
+
+    def _pull(self) -> None:
+        lst = self.query_one("#remote", OptionList)
+        i = lst.highlighted
+        if self.shown and i is not None and i < len(self.shown):
+            self.dismiss(("pull", self.shown[i]["name"]))
+
     def on_input_submitted(self, ev: Input.Submitted) -> None:
-        name = ev.value.strip()
-        if name:
-            self.dismiss(("new", name))
+        self._pull()
 
     def on_option_list_option_selected(self, ev: OptionList.OptionSelected) -> None:
-        if ev.option_index < len(getattr(self, "shown", [])):
-            self.dismiss(("pull", self.shown[ev.option_index]["name"]))
+        self._pull()
+
+    def action_create(self) -> None:
+        name = self.query_one("#name", Input).value.strip()
+        if not name:
+            return
+        exact = [p for p in self.remote if p["name"] == name]
+        if exact:
+            return self.dismiss(("pull", name))  # it exists: never create a twin
+
+        def go(yes: bool | None) -> None:
+            if yes:
+                self.dismiss(("new", name))
+        self.app.push_screen(Confirm(f"Create a NEW Overleaf project called [b]{escape(name)}[/]?"), go)
+
+
+class Say(ModalScreen):
+    """One line of text for the agent."""
+
+    BINDINGS = [Binding("escape", "dismiss(None)", "Cancel")]
+    CSS = "Say { align: center middle; } #sbox { width: 90; border: round $accent; background: $surface; padding: 1 2; }"
+
+    def __init__(self, title: str):
+        super().__init__()
+        self.title_text = title
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="sbox"):
+            yield Label(self.title_text)
+            yield Input(id="say")
+
+    def on_input_submitted(self, ev: Input.Submitted) -> None:
+        self.dismiss(ev.value.strip() or None)
 
 
 class Confirm(ModalScreen[bool]):
@@ -225,7 +340,15 @@ class Full(App):
     TITLE = "Redline: all papers"
     BINDINGS = [
         Binding("o", "open", "Open"),
-        Binding("n", "new", "New"),
+        Binding("l", "enter", "Changes"),
+        Binding("h", "back", "Back"),
+        Binding("slash", "search", "Search"),
+        Binding("escape", "escape", show=False),
+        Binding("n", "key_n", "New / note"),
+        Binding("a", "accept", "Accept"),
+        Binding("x", "reject", "Reject"),
+        Binding("d", "discuss", "Ask AI"),
+        Binding("u", "undo", "Undo"),
         Binding("p", "pull", "Pull"),
         Binding("P", "push", "Push"),
         Binding("c", "compile", "Compile"),
@@ -233,48 +356,163 @@ class Full(App):
         Binding("q", "quit", "Quit"),
     ]
     CSS = """
-    #papers { width: 3fr; }
-    #side { width: 2fr; border-left: solid $primary; padding: 0 1; }
+    #papers, #changes { width: 3fr; }
+    .side { width: 2fr; border-left: solid $primary; padding: 0 1; }
     #detail { height: 8; }
-    #log { height: 9; border-top: solid $primary; }
+    #cdetail { height: 12; overflow-y: auto; }
+    #log { height: 7; border-top: solid $primary; }
+    #search { display: none; dock: bottom; }
     """
+    PAPER_ONLY = {"open", "pull", "push"}
+    CHANGES_ONLY = {"accept", "reject", "discuss", "undo"}
 
     def __init__(self) -> None:
         super().__init__()
         self.rows: dict[str, registry.Info] = {}
+        self.all_papers: list[registry.Info] = []
+        self.changes: list[dict] = []
+        self.paper: Path | None = None
+        self.qpane = None
+        self.level = "papers"
+        self.queries = {"papers": "", "changes": ""}
         self.open_root: Path | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
-        with Horizontal():
-            yield DataTable(id="papers", cursor_type="row", zebra_stripes=True)
-            with Vertical(id="side"):
-                yield Static(id="detail")
-                yield PagePreview(id="page")
+        with ContentSwitcher(initial="papers-view"):
+            with Horizontal(id="papers-view"):
+                yield VimTable(id="papers", cursor_type="row", zebra_stripes=True)
+                with Vertical(classes="side"):
+                    yield Static(id="detail")
+                    yield PagePreview(id="page")
+            with Horizontal(id="changes-view"):
+                yield VimTable(id="changes", cursor_type="row", zebra_stripes=True)
+                with Vertical(classes="side"):
+                    yield Static(id="cdetail")
+                    yield PagePreview(id="cpage")
+        yield Input(placeholder="/ search (enter keeps the filter, esc clears)", id="search")
         yield RichLog(id="log", wrap=True, markup=False)
         yield Footer()
 
     def on_mount(self) -> None:
-        t = self.query_one("#papers", DataTable)
-        t.add_columns("Paper", "Pending", "Unrated", "Overleaf", "tmux", "Active")
-        t.focus()
+        self.query_one("#papers", DataTable).add_columns("Paper", "Pending", "Unrated", "Overleaf", "tmux", "Active")
+        self.query_one("#changes", DataTable).add_columns("#", "Kind", "Section", "Line", "Mark", "Text")
+        self.query_one("#papers").focus()
         self.action_refresh()
 
-    # ---- the list ----------------------------------------------------------------
+    # ---- levels --------------------------------------------------------------------
+    def table(self) -> VimTable:
+        return self.query_one("#papers" if self.level == "papers" else "#changes", VimTable)
+
+    def check_action(self, action: str, parameters) -> bool | None:
+        if self.level == "papers" and action in self.CHANGES_ONLY:
+            return False
+        if self.level == "changes" and action in self.PAPER_ONLY - {"open"}:
+            return False
+        return True
+
+    def action_enter(self) -> None:  # l
+        if self.level != "papers":
+            return
+        it = self.selected()
+        if not it or it.error:
+            return self.say("this paper cannot be read" + (f": {it.error}" if it and it.error else ""))
+        self.paper = it.path
+        self.level = "changes"
+        self.query_one(ContentSwitcher).current = "changes-view"
+        self.set_query("changes", "")
+        self.changes = []
+        self.fill_changes()
+        self.query_one("#changes").focus()
+        self.refresh_bindings()
+        self.load_changes()
+
+    def action_back(self) -> None:  # h
+        if self.level == "changes":
+            self.level = "papers"
+            self.query_one(ContentSwitcher).current = "papers-view"
+            self.query_one("#papers").focus()
+            self.refresh_bindings()
+            self.action_refresh()
+
+    def action_escape(self) -> None:
+        search = self.query_one("#search", Input)
+        if search.has_focus:
+            self.set_query(self.level, "")
+            self.table().focus()
+        elif self.queries[self.level]:
+            self.set_query(self.level, "")
+        else:
+            self.action_back()
+
+    def action_key_n(self) -> None:
+        self.action_new() if self.level == "papers" else self.action_note()
+
+    def action_quit(self) -> None:
+        if self.level == "changes":
+            return self.action_back()
+        self.quit_now()
+
+    def quit_now(self) -> None:
+        for w in self.query(PagePreview):
+            w.forget()
+        self.exit()
+
+    # ---- search ----------------------------------------------------------------------
+    def action_search(self) -> None:
+        box = self.query_one("#search", Input)
+        box.display = True
+        box.value = self.queries[self.level]
+        box.focus()
+
+    def set_query(self, level: str, text: str) -> None:
+        self.queries[level] = text
+        box = self.query_one("#search", Input)
+        if level == self.level:
+            box.value = text
+            box.display = bool(text) or box.has_focus
+        self.refill(level)
+
+    def on_input_changed(self, ev: Input.Changed) -> None:
+        if ev.input.id == "search" and ev.value != self.queries[self.level]:
+            self.queries[self.level] = ev.value
+            self.refill(self.level)
+
+    def on_input_submitted(self, ev: Input.Submitted) -> None:
+        if ev.input.id == "search":
+            ev.input.display = bool(ev.value)
+            self.table().focus()
+
+    def refill(self, level: str) -> None:
+        (self.fill if level == "papers" else self.fill_changes)()
+
+    @staticmethod
+    def matches(query: str, text: str) -> bool:
+        return all(w in text.lower() for w in query.lower().split())
+
+    # ---- the paper list --------------------------------------------------------------
     def action_refresh(self) -> None:
+        if self.level == "changes":
+            return self.load_changes()
         self.load()
 
     @work(thread=True, exclusive=True, group="load")
     def load(self) -> None:
         rows = registry.listing()
-        self.call_from_thread(self.fill, rows)
+        self.call_from_thread(self.set_papers, rows)
 
-    def fill(self, rows: list[registry.Info]) -> None:
-        t = self.query_one("#papers", DataTable)
+    def set_papers(self, rows: list[registry.Info]) -> None:
+        self.all_papers = rows
+        self.fill()
+
+    def fill(self) -> None:
+        t = self.query_one("#papers", VimTable)
         keep = self.current_path()
         t.clear()
         self.rows = {}
-        for it in rows:
+        for it in self.all_papers:
+            if not self.matches(self.queries["papers"], f"{it.name} {it.sync} {it.path}"):
+                continue
             self.rows[str(it.path)] = it
             sync = f"[{SYNC_STYLE.get(it.sync, 'red')}]{it.sync or 'error'}[/]"
             t.add_row(escape(it.name), _cell(it.pending), _cell(it.unrated, warn=True), sync,
@@ -298,7 +536,10 @@ class Full(App):
         return self.rows.get(p) if p else None
 
     def on_data_table_row_highlighted(self, ev: DataTable.RowHighlighted) -> None:
-        self.show_detail()
+        if ev.data_table.id == "papers":
+            self.show_detail()
+        else:
+            self.show_change()
 
     def on_data_table_row_selected(self, ev: DataTable.RowSelected) -> None:  # enter
         self.action_open()
@@ -308,7 +549,7 @@ class Full(App):
         side = self.query_one("#detail", Static)
         page = self.query_one("#page", PagePreview)
         if not it:
-            page.show_pdf(None, "")
+            page.clear()
             side.update("No papers under " + ", ".join(str(r) for r in registry.roots())
                         + "\n\nPress [b]n[/] to make one.")
             return
@@ -318,7 +559,8 @@ class Full(App):
         else:
             lines += [f"pending changes   {it.pending}", f"without a marker  {it.unrated}",
                       f"Overleaf          {it.sync}", f"tmux session      {registry.session_name(it.path)}"
-                      + (" (running)" if it.running else ""), f"last edit         {registry.ago(it.active)}"]
+                      + (" (running)" if it.running else ""), f"last edit         {registry.ago(it.active)}"
+                      + "   [dim]l: review its changes[/]"]
         side.update("\n".join(lines))
         pdf = None
         if not it.error:
@@ -327,35 +569,208 @@ class Full(App):
                 pdf = thumb.paper_pdf(Project.open(it.path))
             except Exception:
                 pdf = None
-        if pdf is None or pdf != page.pdf:
-            page.show_pdf(pdf)
+        page.show_pdf(pdf)
 
-    # ---- actions -----------------------------------------------------------------
+    # ---- the quick menu: one paper's changes ---------------------------------------
+    @work(thread=True, exclusive=True, group="changes")
+    def load_changes(self) -> None:
+        from . import quick
+        from .state import Project
+        try:
+            proj = Project.open(self.paper)
+            rows = quick.list_changes(proj)
+            if self.qpane is None or self.qpane.proj.cfg.root != self.paper:
+                self.qpane = quick.change_pane(proj)
+        except RedlineError as e:
+            self.call_from_thread(self.say, f"cannot read the paper: {e}")
+            return
+        self.call_from_thread(self.set_changes, rows)
+
+    def set_changes(self, rows: list[dict]) -> None:
+        self.changes = rows
+        self.fill_changes()
+
+    def fill_changes(self) -> None:
+        t = self.query_one("#changes", VimTable)
+        keep = self.current_change_id()
+        row_of = {}
+        t.clear()
+        for d in self.changes:
+            text = " ".join((d.get("new") or d.get("old") or d.get("comment") or "").split())
+            mark = ("%" + d["marker"]["kind"]) if d["marker"] else ""
+            if not self.matches(self.queries["changes"], f"{d['label']} {d['kind']} {d['section']} {mark} {text} "
+                                                         f"{d.get('comment') or ''} {d['origin']}"):
+                continue
+            kind = {"added": "[green]+ added[/]", "deleted": "[red]- deleted[/]", "replaced": "[yellow]~ replaced[/]",
+                    "comment": "[cyan]? comment[/]", "highlight": "highlight"}.get(d["kind"], d["kind"])
+            t.add_row(d["label"], kind, escape(d["section"][:28]), str(d["lines"][0]),
+                      f"[b yellow]{mark}[/]" if mark else "", escape(text[:90]), key=d["id"])
+            row_of[d["id"]] = t.row_count - 1
+        if keep in row_of:
+            t.move_cursor(row=row_of[keep])
+        self.show_change()
+
+    def current_change_id(self) -> str | None:
+        t = self.query_one("#changes", DataTable)
+        if not t.row_count:
+            return None
+        try:
+            return t.coordinate_to_cell_key(t.cursor_coordinate).row_key.value
+        except Exception:
+            return None
+
+    def change(self) -> dict | None:
+        cid = self.current_change_id()
+        return next((d for d in self.changes if d["id"] == cid), None)
+
+    def show_change(self) -> None:
+        if self.level != "changes" and not self.changes:
+            return
+        d = self.change()
+        side = self.query_one("#cdetail", Static)
+        page = self.query_one("#cpage", PagePreview)
+        name = escape(self.paper.name) if self.paper else ""
+        if not d:
+            side.update(f"[b]{name}[/]\n\n" + ("nothing matches" if self.queries["changes"] else
+                                                 "No pending changes. [dim]h: back[/]"))
+            page.clear()
+            return
+        head = (f"[b]{d['label']}[/] {d['kind']}  §{escape(d['section'])}  l.{d['lines'][0]}"
+                + (f"-{d['lines'][1]}" if d['lines'][1] != d['lines'][0] else "") + f"  [dim]{d['origin']}[/]")
+        if d["marker"]:
+            head += f"  [b yellow]%{d['marker']['kind']}[/] {escape(d['marker']['note'])}"
+        body = [head, ""]
+        if d["old"] is not None:
+            body.append("[red strike]" + escape(" ".join(d["old"].split())) + "[/]")
+        if d["new"] is not None:
+            body.append("[green]" + escape(" ".join(d["new"].split())) + "[/]")
+        if d["comment"] is not None:
+            body.append("[cyan]" + escape(" ".join(d["comment"].split())) + "[/]")
+        side.update("\n".join(body))
+        from . import quick
+        pane, pdfm = self.qpane, 0
+        if pane is None:
+            return
+        with contextlib.suppress(OSError):
+            pdfm = pane.pdf.stat().st_mtime_ns
+        page.show_job(f"chg:{self.paper}:{d['id']}:{pdfm}", lambda w, h, d=d, pane=pane: quick.change_image(pane, d, w, h))
+
+    # ---- deciding ----------------------------------------------------------------
+    def _decide(self, verb: str, fn) -> None:
+        d = self.change()
+        if not d or not self.paper:
+            return
+        self.decide(verb, self.paper, d, fn)
+
+    @work(thread=True, group="decide")
+    def decide(self, verb: str, root: Path, d: dict, fn) -> None:
+        from .state import Project
+        try:
+            fn(Project.open(root), d["id"])
+            self.call_from_thread(self.say, f"{verb} {d['label']} ({d['kind']}, l.{d['lines'][0]})   u undoes")
+        except RedlineError as e:
+            self.call_from_thread(self.say, f"{verb} failed: {e}")
+        self.call_from_thread(self.load_changes)
+
+    def action_accept(self) -> None:
+        from . import quick
+        self._decide("accepted", quick.accept)
+
+    def action_reject(self) -> None:
+        from . import quick
+        self._decide("rejected", quick.reject)
+
+    @work(thread=True, group="decide")
+    def action_undo(self) -> None:
+        from . import quick
+        from .state import Project
+        try:
+            self.call_from_thread(self.say, quick.undo(Project.open(self.paper)))
+        except RedlineError as e:
+            self.call_from_thread(self.say, f"undo failed: {e}")
+        self.call_from_thread(self.load_changes)
+
+    # ---- talking to the agent --------------------------------------------------------
+    def action_note(self) -> None:
+        self.talk("note")
+
+    def action_discuss(self) -> None:
+        self.talk("ask")
+
+    def talk(self, how: str) -> None:
+        d = self.change()
+        if not d or not self.paper:
+            return
+        from . import quick
+        if not quick.alive(self.paper):
+            self.say(f"starting {quick.session(self.paper)} in the background while you write ...")
+            self.start_session(self.paper)
+        title = (f"Note on {d['label']} (stays pending as %N; the agent revises it):" if how == "note"
+                 else f"Ask the agent about {d['label']} (nothing is edited):")
+
+        def done(text) -> None:
+            if text:
+                self.send(how, self.paper, d, text)
+        self.push_screen(Say(title), done)
+
+    @work(thread=True, group="session")
+    def start_session(self, root: Path) -> None:
+        from . import quick
+        try:
+            quick.ensure_session(root)
+            self.call_from_thread(self.say, "background session is up")
+        except RedlineError as e:
+            self.call_from_thread(self.say, f"session failed: {e}")
+
+    @work(thread=True, group="send")
+    def send(self, how: str, root: Path, d: dict, text: str) -> None:
+        from . import quick
+        from .state import Project
+        say = lambda s: self.call_from_thread(self.say, s)  # noqa: E731
+        try:
+            if how == "note":
+                quick.mark_note(Project.open(root), d["id"], text)
+                msg = quick.note_message(d, text)
+            else:
+                msg = quick.ask_message(d, text)
+            say("waiting for the agent ..." if not quick.alive(root) else "sending ...")
+            name = quick.send_to_agent(root, msg)
+            say(f"sent to the agent in {name}; read the answer there (enter opens it)")
+        except RedlineError as e:
+            say(f"not sent: {e}")
+        except Exception as e:
+            say(f"not sent: {e}")
+        self.call_from_thread(self.load_changes)
+
+    # ---- the rest ----------------------------------------------------------------
     def say(self, text: str) -> None:
         self.query_one("#log", RichLog).write(text)
 
-    def action_quit(self) -> None:
-        self.query_one("#page", PagePreview).forget()
-        self.exit()
-
     def action_open(self) -> None:
-        it = self.selected()
-        if not it:
+        root = self.paper if self.level == "changes" else (self.selected().path if self.selected() else None)
+        if not root:
             return
+        line = (self.change() or {}).get("lines", [0])[0] if self.level == "changes" else 0
         if os.environ.get("TMUX"):
-            self.say(f"opening {it.name} in tmux...")
-            self.attach(it.path)
+            self.say(f"opening {root.name} in tmux...")
+            self.attach(root, line)
         else:
-            self.open_root = it.path
-            self.action_quit()
+            self.open_root = root
+            self.open_line = line
+            self.quit_now()
 
     @work(thread=True)
-    def attach(self, root: Path) -> None:
+    def attach(self, root: Path, line: int = 0) -> None:
         from .launcher import open_workspace
         out = io.StringIO()
         try:
             with contextlib.redirect_stdout(out):
-                open_workspace(root, attach=True)
+                open_workspace(root, attach=False)
+            if line:
+                from . import quick
+                quick.goto(root, line)
+            from .launcher import _tmux
+            _tmux("switch-client", "-t", f"={registry.session_name(root)}")
             self.call_from_thread(self.say, f"switched to {registry.session_name(root)}")
         except Exception as e:
             self.call_from_thread(self.say, f"cannot open: {e}")
@@ -379,10 +794,9 @@ class Full(App):
         self.call_from_thread(self.action_refresh)
 
     def _job(self, label: str, fn) -> None:
-        it = self.selected()
-        if not it:
-            return
-        self.run_job(label, it.path, fn)
+        root = self.paper if self.level == "changes" else (self.selected().path if self.selected() else None)
+        if root:
+            self.run_job(label, root, fn)
 
     @work(thread=True, group="job")
     def run_job(self, label: str, root: Path, fn) -> None:
@@ -420,5 +834,11 @@ def run() -> int:
     app.run()
     if app.open_root:
         from .launcher import open_workspace
-        return open_workspace(app.open_root, attach=True)
+        rc = open_workspace(app.open_root, attach=False)
+        if getattr(app, "open_line", 0):
+            from . import quick
+            quick.goto(app.open_root, app.open_line)
+        import subprocess
+        os.execvp("tmux", ["tmux", "attach-session", "-t", f"={registry.session_name(app.open_root)}"]) if not rc else None
+        return rc
     return 0

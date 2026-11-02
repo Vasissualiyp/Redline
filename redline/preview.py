@@ -127,7 +127,7 @@ def page_height(pdf: Path, page: int) -> float:
 
 
 class Pane:
-    def __init__(self, proj: Project, pdf: Path | None = None, tmp: Path | None = None):
+    def __init__(self, proj: Project, pdf: Path | None = None, tmp: Path | None = None, draw: bool = True):
         self.proj = proj
         self.pdf = pdf or _compile.view_pdf(proj)
         self.tex = proj.main
@@ -142,7 +142,7 @@ class Pane:
         self.windows: dict[int, tuple[float, float]] = {}  # page -> visible (top, bottom) in pt
         self.source_jump = True  # e/Enter: show the LaTeX source of what is on screen
         from .kittygfx import Kitty
-        self.gfx = Kitty()
+        self.gfx = Kitty() if draw else None  # draw=False: only compose() images (the quick menu)
 
     # ---- rendering --------------------------------------------------------------
     def render(self) -> None:

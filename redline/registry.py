@@ -111,6 +111,7 @@ def info(root: Path, running: set[str] | None = None) -> Info:
     it.running = session_name(root) in (sessions() if running is None else running)
     try:
         proj = Project.open(root)
+        it.name = proj.cfg.project_name  # the Overleaf project's name, as written there
         main = proj.cfg.main_path
         items = [i for i in proj.doc().items if i.kind != "comment"]
         it.pending = len(items)
@@ -137,11 +138,16 @@ def listing() -> list[Info]:
 
 def find(name: str) -> Path:
     paths = scan()
-    exact = [p for p in paths if p.name == name or session_name(p) == name]
+    def title(p: Path) -> str:
+        try:
+            return config.load(p).project_name
+        except Exception:
+            return p.name
+    exact = [p for p in paths if p.name == name or title(p) == name or session_name(p) == name]
     if len(exact) == 1:
         return exact[0]
     low = name.lower()
-    fuzzy = [p for p in paths if low in p.name.lower()]
+    fuzzy = [p for p in paths if low in p.name.lower() or low in title(p).lower()]
     if len(fuzzy) == 1:
         return fuzzy[0]
     if not fuzzy and not exact:
@@ -151,7 +157,8 @@ def find(name: str) -> Path:
 
 # ---- new papers --------------------------------------------------------------------
 def _dest(name: str, dest: Path | None) -> Path:
-    dest = Path(dest).expanduser() if dest else papers_dir() / name.replace("/", "-")
+    # the directory carries the Overleaf name as is ("/" cannot be part of a directory name)
+    dest = Path(dest).expanduser() if dest else papers_dir() / name.replace("/", "∕")
     if dest.exists() and any(dest.iterdir()):
         raise RedlineError(f"{dest} exists and is not empty")
     return dest

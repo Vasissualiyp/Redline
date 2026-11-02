@@ -138,3 +138,81 @@ def test_preamble_respects_existing_and_bare_class(tmp_path):
     g.write_text("\\documentclass[11pt]{article}\n\n\\begin{document}\n\\end{document}\n")
     assert preamble.ensure(g) == ["changes", "chcomment"]
     assert g.read_text().splitlines()[1].startswith("\\usepackage[markup")
+
+
+CHANGES = ("\\documentclass{article}\n\\begin{document}\n\\section{A}\n"
+           + "".join(f"Line {i} \\added{{new {i}}} here.\n\n" for i in range(30)) + "\\end{document}\n")
+
+
+def test_quick_decisions_and_messages(home):
+    from redline import quick
+    from redline.state import Project
+    d = make_paper(home)
+    (d / "main.tex").write_text(CHANGES)
+    proj = Project.open(d)
+    ch = quick.list_changes(proj)
+    assert len(ch) == 30 and ch[0]["kind"] == "added"
+    quick.accept(proj, ch[0]["id"])
+    quick.reject(proj, ch[1]["id"])
+    src = (d / "main.tex").read_text()
+    assert "Line 0 new 0 here." in src and "\\added{new 1}" not in src and "\\added{new 2}" in src
+    quick.undo(proj)
+    assert "\\added{new 1}" in (d / "main.tex").read_text()  # the reject is undone
+    quick.mark_note(proj, ch[2]["id"], "shorter please")
+    again = {c["id"]: c for c in quick.list_changes(proj)}
+    assert again[ch[2]["id"]]["marker"]["note"] == "shorter please"
+    assert "shorter please" in quick.note_message(again[ch[2]["id"]], "shorter please")
+    assert "do not edit" in quick.ask_message(ch[3], "why?")
+
+
+def test_tui_vim_motions_and_review(home):
+    d = make_paper(home, "alpha")
+    (d / "main.tex").write_text(CHANGES)
+    for n in ("b", "c", "d"):
+        make_paper(home, n)
+    from redline.fulltui import Full
+    import os
+    os.environ.pop("TMUX", None)
+
+    async def go():
+        app = Full()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await pilot.pause(0.6)
+            t = app.query_one("#papers")
+            assert t.row_count == 4
+            await pilot.press("G")
+            assert t.cursor_row == 3
+            await pilot.press("g", "g")
+            assert t.cursor_row == 0
+            await pilot.press("j", "j", "k")
+            assert t.cursor_row == 1
+            await pilot.press("slash", *"alpha", "enter")
+            await pilot.pause(0.2)
+            assert t.row_count == 1
+            await pilot.press("l")
+            await pilot.pause(1.0)
+            assert app.level == "changes" and app.paper.name == "alpha"
+            c = app.query_one("#changes")
+            assert c.row_count == 30
+            await pilot.press("ctrl+d")
+            assert c.cursor_row > 5
+            await pilot.press("H")
+            top = c.cursor_row
+            await pilot.press("L")
+            assert c.cursor_row >= top
+            await pilot.press("g", "g", "a")
+            await pilot.pause(1.0)
+            assert c.row_count == 29 and "Line 0 new 0 here." in (d / "main.tex").read_text()
+            await pilot.press("x")
+            await pilot.pause(1.0)
+            assert c.row_count == 28
+            await pilot.press("u")
+            await pilot.pause(1.0)
+            assert c.row_count == 29
+            await pilot.press("h")
+            await pilot.pause(0.5)
+            assert app.level == "papers"
+            await pilot.press("escape")
+            await pilot.pause(0.3)
+            assert app.query_one("#papers").row_count == 4
+    asyncio.run(go())
