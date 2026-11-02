@@ -17,7 +17,7 @@
       let
         pkgs = import nixpkgs { inherit system; };
         python = pkgs.python314;
-        pyDeps = ps: with ps; [ mcp pillow ];
+        pyDeps = ps: with ps; [ mcp pillow textual ];
 
         # Runtime tools the CLI shells out to.
         # mupdf: mutool rasterises pages 10-20x faster than poppler (poppler stays for

@@ -350,3 +350,25 @@ redline undo                  # revert the last redline write (keeps later unrel
 
 Tests: `nix develop -c python -m pytest`. The LaTeX test needs `latexmk`. The
 real-paper test runs when the Pop III paper is present.
+
+## All your papers: `redline full`
+
+```
+redline full                 # full-screen list of every paper (Textual)
+redline full list [--json]   # name, pending, unrated, Overleaf state, tmux, last edit
+redline full remote          # the projects on your Overleaf account
+redline full new NAME        # create the project on Overleaf and a local paper with a starter main.tex
+redline full new NAME --pull # pull the existing Overleaf project of that name instead
+redline full open NAME       # start (or attach to) the paper's tmux workspace
+```
+
+Papers are the directories under `roots` (default `~/Software/Overleaf-nix-flake`) that have a
+`.redline.toml`; set `roots` and `papers_dir` (where new papers go) in `~/.config/redline/config.toml`.
+In the TUI: `enter` open, `n` new or pull, `p` pull, `P` push (asks first), `c` compile, `r` refresh, `q` quit.
+Accepting and rejecting stays inside a paper's workspace.
+
+A paper without `--code-dir` gets an `analysis/` directory for its code, kept out of Overleaf.
+
+Setting a paper up (`redline init`, `redline full new`, the first `redline open`) also adds what the markup
+needs to the preamble if missing: the `changes` package and a `\providecommand{\chcomment}{\comment}` alias
+(`changes` only defines `\chcomment` when another package already owns `\comment`).

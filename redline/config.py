@@ -11,6 +11,7 @@ from .model import RedlineError
 from .parse import DEFAULT_LEGACY
 
 CONFIG_NAME = ".redline.toml"
+DEFAULT_CODE_DIR = "analysis"
 
 DEFAULT_TOML = """\
 # Redline settings for this paper. Not synced to Overleaf.
@@ -31,7 +32,7 @@ tmux_quit_key = "Q"
 tmux_model_key = "A"
 # Overleaf sync (overleaf-sync's `ols`); project defaults to the directory name.
 ols = "ols"
-overleaf_project = ""
+overleaf_project = "{overleaf_project}"
 # Comments matching this regex survive bulk accepts.
 keep_comment_regex = "TODO"
 # Zotero collection for the evidence notes behind % VERIFIED lines ({{paper}} = this folder's name)
@@ -199,12 +200,32 @@ def load(root: Path | None = None) -> Config:
     if "mcp_extra" in data:
         cfg.mcp_extra = {k: list(v) for k, v in data["mcp_extra"].items()}
     cfg.legacy = legacy
-    cfg.code_dir = os.path.expanduser(cfg.code_dir) if cfg.code_dir else ""
+    if cfg.code_dir:
+        cfg.code_dir = str((root / os.path.expanduser(cfg.code_dir)))  # relative = inside the paper
     return cfg
 
 
-def write_default(root: Path, code_dir: str = "") -> Path:
+def write_default(root: Path, code_dir: str = "", overleaf_project: str = "") -> Path:
+    """Create .redline.toml. Without a code directory, `analysis/` inside the paper
+    is created for it (kept out of Overleaf by sync.ensure_ignores)."""
     path = root / CONFIG_NAME
     if not path.exists():
-        path.write_text(DEFAULT_TOML.format(main=detect_main(root), code_dir=code_dir))
+        if not code_dir:
+            code_dir = DEFAULT_CODE_DIR
+        target = root / os.path.expanduser(code_dir)
+        if code_dir == DEFAULT_CODE_DIR or not target.exists():
+            target.mkdir(parents=True, exist_ok=True)
+        path.write_text(DEFAULT_TOML.format(main=detect_main(root), code_dir=code_dir,
+                                            overleaf_project=overleaf_project))
     return path
+
+
+def code_ignores(root: Path, code_dir: str) -> list[str]:
+    """Ignore entries for a code directory that lives inside the paper."""
+    if not code_dir:
+        return []
+    try:
+        rel = (root / os.path.expanduser(code_dir)).resolve().relative_to(root.resolve())
+    except ValueError:
+        return []
+    return [str(rel), f"{rel}/*"] if str(rel) != "." else []

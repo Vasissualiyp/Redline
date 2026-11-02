@@ -129,9 +129,13 @@ def in_login_shell(cmd: str) -> str:
 
 def open_workspace(root: Path | None, attach: bool = True) -> int:
     root = _config.find_root(root)
+    fresh = not (root / _config.CONFIG_NAME).exists()
     _config.write_default(root)
     _sync.ensure_ignores(root)
     proj = Project.open(root)
+    if fresh:
+        from . import preamble
+        preamble.ensure(proj.cfg.main_path)
     write_mcp_config(proj)
     if not shutil.which("tmux"):
         print("tmux not found", file=sys.stderr)

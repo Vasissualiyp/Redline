@@ -54,6 +54,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("-C", "--root", help="paper directory (default: nearest with .redline.toml, or cwd)")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
+    p = sub.add_parser("full", help="all your papers in one place: list | remote | new | open | tui")
+    p.add_argument("what", nargs="?", choices=["tui", "list", "remote", "new", "open"], default="tui")
+    p.add_argument("name", nargs="?", help="paper (open) or Overleaf project name (new)")
+    p.add_argument("--pull", action="store_true", help="new: pull the existing Overleaf project of this name")
+    p.add_argument("--dir", help="new: directory for the paper (default: next to your other papers)")
+    p.add_argument("--code-dir", default="", help="new: analysis code directory (default: analysis/ inside the paper)")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--no-attach", action="store_true", help="open: start the session without attaching")
+
     p = sub.add_parser("init", help="create .redline.toml, ignore entries and the Overleaf merge base")
     p.add_argument("--code-dir", default="", help="analysis/plotting code directory")
     p.add_argument("--no-sync", action="store_true", help="skip downloading the Overleaf base")
@@ -149,6 +158,50 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
 
+def _full_cmd(a: argparse.Namespace) -> int:
+    from . import registry
+    if a.what == "tui":
+        from .fulltui import run
+        return run()
+    if a.what == "list":
+        rows = registry.listing()
+        if a.json:
+            print(json.dumps([r.as_dict() for r in rows], indent=1))
+            return 0
+        w = max([len(r.name) for r in rows] + [5])
+        print(f"{'PAPER':{w}}  PENDING  UNRATED  OVERLEAF     TMUX     ACTIVE")
+        for r in rows:
+            n = lambda v: "?" if v is None else str(v)  # noqa: E731
+            print(f"{r.name:{w}}  {n(r.pending):>7}  {n(r.unrated):>7}  {r.sync or 'error':11}  "
+                  f"{'running' if r.running else '-':7}  {registry.ago(r.active)}" + (f"  [{r.error}]" if r.error else ""))
+            print(f"{'':{w}}  {r.path}")
+        return 0
+    if a.what == "remote":
+        from . import overleaf
+        local = {p.name for p in registry.scan()}
+        ps = overleaf.projects()
+        if a.json:
+            print(json.dumps(ps, indent=1))
+        for p in ([] if a.json else ps):
+            print(f"{overleaf.pretty(p['updated'])}  {p['name']}" + ("  (local)" if p["name"] in local else ""))
+        return 0
+    if a.what == "open":
+        from .launcher import open_workspace
+        if not a.name:
+            print("redline full open: give a paper name (`redline full list`)", file=sys.stderr)
+            return 2
+        return open_workspace(registry.find(a.name), attach=not a.no_attach)
+    # new
+    if not a.name:
+        print("redline full new: give the paper's name", file=sys.stderr)
+        return 2
+    dest = Path(a.dir) if a.dir else None
+    make = registry.pull_existing if a.pull else registry.create_blank
+    path = make(a.name, dest, a.code_dir)
+    print(f"{'pulled' if a.pull else 'created'}: {path}\nopen it with: redline full open {path.name!r}")
+    return 0
+
+
 def _run(a: argparse.Namespace) -> int:
     from . import config
 
@@ -161,6 +214,8 @@ def _run(a: argparse.Namespace) -> int:
         return open_workspace(Path(a.dir).expanduser() if a.dir else None, attach=not a.no_attach)
     if a.cmd == "agent":
         return _agent_cmd(a)
+    if a.cmd == "full":
+        return _full_cmd(a)
     if a.cmd == "quit":
         from . import launcher as LA
         session = a.session or LA._session_of_caller()
@@ -215,6 +270,10 @@ def _run(a: argparse.Namespace) -> int:
             print("added redline entries to " + ", ".join(changed))
         from .state import Project
         proj = Project.open()
+        from . import preamble
+        added = preamble.ensure(proj.cfg.main_path)
+        if added:
+            print(f"added to the preamble of {proj.cfg.main}: " + ", ".join(added))
         from .launcher import write_mcp_config
         print("mcp config: " + write_mcp_config(proj))
         if not a.no_sync:

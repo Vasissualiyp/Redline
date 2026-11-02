@@ -1,0 +1,140 @@
+import asyncio
+import json
+import subprocess
+
+import pytest
+
+from redline import config, overleaf, registry, sync
+
+PAPER = "\\documentclass{article}\n\\begin{document}\nHello \\added{new} world.\n\\end{document}\n"
+
+
+@pytest.fixture
+def home(tmp_path, monkeypatch):
+    root = tmp_path / "papers"
+    root.mkdir()
+    cfg = tmp_path / "cfg.toml"
+    cfg.write_text(f'roots = ["{root}"]\n')
+    monkeypatch.setattr(config, "GLOBAL_CONFIG", cfg)
+    monkeypatch.setattr(registry, "sessions", lambda: set())
+    return root
+
+
+def make_paper(root, name="alpha"):
+    d = root / name
+    d.mkdir()
+    (d / "main.tex").write_text(PAPER)
+    config.write_default(d)
+    return d
+
+
+def test_scan_and_listing(home):
+    make_paper(home, "alpha")
+    (home / "plain").mkdir()  # no .redline.toml: not a paper
+    assert [p.name for p in registry.scan()] == ["alpha"]
+    [it] = registry.listing()
+    assert (it.name, it.pending, it.unrated, it.sync) == ("alpha", 1, 1, "no base")
+    assert registry.find("alp") == home / "alpha"
+
+
+def test_default_code_dir_is_created_and_ignored(home):
+    d = make_paper(home)
+    assert (d / "analysis").is_dir()
+    sync.ensure_ignores(d)
+    assert "analysis/*" in (d / ".olignore").read_text().splitlines()
+    assert config.load(d).code_dir == str(d / "analysis")
+
+
+def test_explicit_code_dir_is_not_created_elsewhere(home, tmp_path):
+    d = home / "b"
+    d.mkdir()
+    (d / "main.tex").write_text(PAPER)
+    config.write_default(d, str(tmp_path / "code"))
+    assert not (d / "analysis").exists()
+    assert (tmp_path / "code").is_dir()
+
+
+def test_pull_existing(home, monkeypatch):
+    def fetch(name, dest, ols="ols"):
+        (dest / "main.tex").write_text(PAPER)
+        return ""
+    monkeypatch.setattr(sync, "fetch_project", fetch)
+    dest = registry.pull_existing("My Paper")
+    assert dest == home / "My Paper"
+    cfg = config.load(dest)
+    assert cfg.main == "main.tex" and cfg.project_name == "My Paper"
+    assert (dest / ".redline" / "base" / "main.tex").read_text() == PAPER
+    assert (dest / "analysis").is_dir()
+    assert "{changes}" in (dest / "main.tex").read_text()  # added to the preamble, not to the base
+    assert registry.listing()[0].sync == "local edits"
+
+
+def test_create_blank_pushes_the_starter(home, monkeypatch):
+    created, pushed = [], []
+    monkeypatch.setattr(overleaf, "create", lambda name: created.append(name) or "id1")
+    monkeypatch.setattr(sync, "fetch_project",
+                        lambda name, dest, ols="ols": (dest / "main.tex").write_text("blank\n") or "")
+
+    class Rep:
+        pushed = True
+        def text(self): return ""
+    monkeypatch.setattr(sync, "push", lambda proj, force=False, skip_pull=False: pushed.append(proj.cfg.main_path.read_text()) or Rep())
+    dest = registry.create_blank("Fresh")
+    assert created == ["Fresh"]
+    assert "\\usepackage" in pushed[0] and "{changes}" in pushed[0]
+    assert (dest / ".redline" / "base" / "main.tex").read_text() == "blank\n"  # base = what Overleaf had
+    with pytest.raises(Exception):
+        registry.create_blank("Fresh")  # the directory exists now
+
+
+def test_refuses_nonempty_destination(home):
+    d = make_paper(home)
+    with pytest.raises(Exception):
+        registry.pull_existing("alpha", d)
+
+
+def test_tui_lists_papers(home):
+    make_paper(home, "alpha")
+    make_paper(home, "beta")
+    from redline.fulltui import Full
+
+    async def go():
+        app = Full()
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause(0.5)
+            t = app.query_one("#papers")
+            assert t.row_count == 2
+            await pilot.press("n")
+            await pilot.pause(0.2)
+            assert app.screen.__class__.__name__ == "NewPaper"
+            await pilot.press("escape")
+            await pilot.pause(0.1)
+            await pilot.press("enter")  # outside tmux: remember the paper and quit
+            await pilot.pause(0.2)
+        return app.open_root
+    import os
+    os.environ.pop("TMUX", None)
+    assert asyncio.run(go()).name in ("alpha", "beta")
+
+
+def test_preamble_adds_changes_once(tmp_path):
+    from redline import preamble
+    f = tmp_path / "p.tex"
+    f.write_text("\\documentclass{article}\n\\usepackage{amsmath}\n% \\usepackage{changes}\n\\usepackage{graphicx}\n\\begin{document}\nx\n\\end{document}\n")
+    assert preamble.ensure(f) == ["changes", "chcomment"]
+    lines = f.read_text().splitlines()
+    assert lines[3].endswith("{graphicx}") and "{changes}" in lines[4]
+    assert lines[5] == "\\providecommand{\\chcomment}{\\comment}" and lines[6] == "\\begin{document}"
+    assert preamble.ensure(f) == []  # already there
+
+
+def test_preamble_respects_existing_and_bare_class(tmp_path):
+    from redline import preamble
+    f = tmp_path / "p.tex"
+    f.write_text("\\documentclass{article}\n\\usepackage[draft]{xcolor,changes}\n\\begin{document}\n\\end{document}\n")
+    assert preamble.ensure(f) == ["chcomment"]  # changes is loaded, its comment alias is not
+    assert preamble.ensure(f) == []
+    g = tmp_path / "q.tex"
+    g.write_text("\\documentclass[11pt]{article}\n\n\\begin{document}\n\\end{document}\n")
+    assert preamble.ensure(g) == ["changes", "chcomment"]
+    assert g.read_text().splitlines()[1].startswith("\\usepackage[markup")

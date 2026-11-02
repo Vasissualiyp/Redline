@@ -7,7 +7,7 @@ name = "redline"
 version = "0.1.0"
 description = "Review AI-suggested LaTeX `changes` edits from nvim, tmux and MCP"
 requires-python = ">=3.11"
-dependencies = ["mcp", "pillow"]
+dependencies = ["mcp", "pillow", "textual"]
 
 [project.scripts]
 redline = "redline.cli:main"

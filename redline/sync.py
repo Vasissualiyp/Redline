@@ -56,13 +56,20 @@ class SyncReport:
         return "\n".join(out)
 
 
-def ensure_ignores(root: Path) -> list[str]:
+def ensure_ignores(root: Path, extra: list[str] | None = None) -> list[str]:
     """Keep redline's files out of Overleaf and git (olssync.sh copies .gitignore over .olignore)."""
+    import tomllib
+    from . import config
+    try:
+        data = tomllib.loads((root / config.CONFIG_NAME).read_text())
+    except (OSError, ValueError):
+        data = {}
+    extra = [*(extra or []), *config.code_ignores(root, str(data.get("code_dir", "")))]
     changed = []
     for name in (".olignore", ".gitignore"):
         p = root / name
         lines = p.read_text().splitlines() if p.exists() else []
-        missing = [e for e in IGNORE_ENTRIES if e not in lines]
+        missing = [e for e in [*IGNORE_ENTRIES, *extra] if e not in lines]
         if missing:
             p.write_text("\n".join(lines + ["# redline"] + missing) + "\n")
             changed.append(name)
@@ -70,7 +77,11 @@ def ensure_ignores(root: Path) -> list[str]:
 
 
 def _ols(proj: Project) -> list[str]:
-    cmd = shlex.split(proj.cfg.ols)
+    return ols_command(proj.cfg.ols)
+
+
+def ols_command(setting: str = "ols") -> list[str]:
+    cmd = shlex.split(setting)
     if shutil.which(cmd[0]):
         return cmd
     flake = Path.home() / "Software/Overleaf-nix-flake"
@@ -98,6 +109,20 @@ def _run_ols(proj: Project, args: list[str], cwd: Path, timeout: int = 600) -> s
     if r.returncode != 0:
         raise RedlineError(f"`{' '.join(cmd)}` failed ({r.returncode}):\n{out[-2000:]}")
     return out
+
+
+def fetch_project(name: str, dest: Path, ols: str = "ols") -> str:
+    """Download the Overleaf project `name` into the (new) directory `dest`."""
+    cmd = ols_command(ols) + ["-n", name, "-r", "-p", "."]
+    try:
+        r = subprocess.run(cmd, cwd=dest, input="y\n" * 50, capture_output=True, text=True,
+                           timeout=600, env=_clean_env())
+    except subprocess.TimeoutExpired:
+        raise RedlineError(f"`{' '.join(cmd)}` timed out")
+    if r.returncode != 0:
+        raise RedlineError(f"`{' '.join(cmd)}` failed ({r.returncode}):\n{(r.stdout + r.stderr)[-2000:]}")
+    (dest / ".olauth").unlink(missing_ok=True)
+    return (r.stdout + r.stderr).strip()
 
 
 def _clean_env() -> dict:
@@ -143,6 +168,19 @@ def init_base(proj: Project) -> SyncReport:
                                     "the next pull merges only newer remote edits)")
     rep.messages.append("base snapshot initialised from Overleaf")
     return rep
+
+
+def snapshot_base(proj: Project) -> None:
+    """The local files as they are now become the merge base (just after a download)."""
+    base = proj.dir / "base"
+    if base.exists():
+        shutil.rmtree(base)
+    base.mkdir(parents=True)
+    root = proj.cfg.root
+    for rel in _files(root):
+        if not _ignored(rel, _ignore_patterns(root)):
+            (base / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(root / rel, base / rel)
 
 
 def pull(proj: Project) -> SyncReport:
