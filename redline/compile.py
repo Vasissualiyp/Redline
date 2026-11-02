@@ -61,7 +61,11 @@ def parse_log(log: str, main_name: str) -> tuple[list[TexError], list[dict], int
         m = _FILE_LINE.match(ln)
         b = _BANG.match(ln) if not m else None
         if m or b:
-            err = TexError(line=int(m["line"]) if m else 0, message=(m or b)["msg"].strip(),
+            msg = (m or b)["msg"].strip()
+            if len(ln) >= 79 and i + 1 < len(lines) and lines[i + 1].strip() \
+                    and not re.match(r"(l\.\d+|<|\\|!)", lines[i + 1]):
+                msg += lines[i + 1].strip()  # TeX wraps its log at 79 columns, even inside a word
+            err = TexError(line=int(m["line"]) if m else 0, message=msg,
                            file=m["file"] if m else "")
             # the context line "l.123 ..." follows within a few lines
             for j in range(i + 1, min(i + 12, len(lines))):

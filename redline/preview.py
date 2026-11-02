@@ -34,7 +34,7 @@ from . import pdfmatch
 from .pdfmatch import Rect
 from .state import Project
 
-HIGHLIGHTER = (255, 226, 70)  # marker yellow; multiplied into the page
+HIGHLIGHTER = (255, 232, 120)  # marker yellow, multiplied into the page; blue stays enough to keep blue ink blue
 
 
 @dataclass

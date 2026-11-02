@@ -18,7 +18,7 @@ from rich.style import Style
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import ContentSwitcher
 from textual.screen import ModalScreen
 from textual.strip import Strip
@@ -348,6 +348,8 @@ class Full(App):
         Binding("a", "accept", "Accept"),
         Binding("x", "reject", "Reject"),
         Binding("d", "discuss", "Ask AI"),
+        Binding("t", "chat", "Talk to AI"),
+        Binding("v", "toggle_view", "Page/Text"),
         Binding("u", "undo", "Undo"),
         Binding("p", "pull", "Pull"),
         Binding("P", "push", "Push"),
@@ -362,9 +364,12 @@ class Full(App):
     #cdetail { height: 12; overflow-y: auto; }
     #log { height: 7; border-top: solid $primary; }
     #search { display: none; dock: bottom; }
+    #cscroll { display: none; height: 1fr; }
+    #changes-view.textmode #changes { width: 2fr; }
+    #changes-view.textmode .side { width: 3fr; }
     """
     PAPER_ONLY = {"open", "pull", "push"}
-    CHANGES_ONLY = {"accept", "reject", "discuss", "undo"}
+    CHANGES_ONLY = {"accept", "reject", "discuss", "undo", "toggle_view"}
 
     def __init__(self) -> None:
         super().__init__()
@@ -376,6 +381,12 @@ class Full(App):
         self.level = "papers"
         self.queries = {"papers": "", "changes": ""}
         self.open_root: Path | None = None
+        self.qdoc = None
+        self.text_view = False        # source context instead of the PDF page (no kitty graphics needed)
+        self.seen_mtime = 0.0         # newest .tex mtime the change list was built from
+        self.compiled_for = 0.0       # ... and the one the last compile ran on
+        self.compiling = False
+        self.compile_timer = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -390,6 +401,8 @@ class Full(App):
                 with Vertical(classes="side"):
                     yield Static(id="cdetail")
                     yield PagePreview(id="cpage")
+                    with VerticalScroll(id="cscroll"):
+                        yield Static(id="cctx")
         yield Input(placeholder="/ search (enter keeps the filter, esc clears)", id="search")
         yield RichLog(id="log", wrap=True, markup=False)
         yield Footer()
@@ -398,6 +411,9 @@ class Full(App):
         self.query_one("#papers", DataTable).add_columns("Paper", "Pending", "Unrated", "Overleaf", "tmux", "Active")
         self.query_one("#changes", DataTable).add_columns("#", "Kind", "Section", "Line", "Mark", "Text")
         self.query_one("#papers").focus()
+        self.text_view = not self.query_one("#cpage", PagePreview).graphics_ok()
+        self.apply_view()
+        self.set_interval(4.0, self.watch)
         self.action_refresh()
 
     # ---- levels --------------------------------------------------------------------
@@ -426,6 +442,18 @@ class Full(App):
         self.query_one("#changes").focus()
         self.refresh_bindings()
         self.load_changes()
+        self.maybe_compile_on_entry()
+
+    @work(thread=True, group="entry")
+    def maybe_compile_on_entry(self) -> None:
+        from . import quick
+        from .state import Project
+        try:
+            if quick.stale(Project.open(self.paper)) and self.newest_tex() != self.compiled_for:
+                self.call_from_thread(self.say, "the PDF is older than the source: rebuilding it")
+                self.call_from_thread(self.compile_paper, self.paper)
+        except RedlineError:
+            pass
 
     def action_back(self) -> None:  # h
         if self.level == "changes":
@@ -578,7 +606,9 @@ class Full(App):
         from .state import Project
         try:
             proj = Project.open(self.paper)
-            rows = quick.list_changes(proj)
+            rows, doc = quick.load(proj)
+            self.qdoc = doc
+            self.seen_mtime = self.newest_tex()
             if self.qpane is None or self.qpane.proj.cfg.root != self.paper:
                 self.qpane = quick.change_pane(proj)
         except RedlineError as e:
@@ -646,14 +676,83 @@ class Full(App):
             body.append("[green]" + escape(" ".join(d["new"].split())) + "[/]")
         if d["comment"] is not None:
             body.append("[cyan]" + escape(" ".join(d["comment"].split())) + "[/]")
-        side.update("\n".join(body))
         from . import quick
+        if self.text_view:
+            if self.qdoc is not None:
+                self.query_one("#cctx", Static).update(quick.context(self.qdoc, d["id"]))
+            side.update("\n".join(body))
+            return
+        side.update("\n".join(body))
         pane, pdfm = self.qpane, 0
         if pane is None:
             return
         with contextlib.suppress(OSError):
             pdfm = pane.pdf.stat().st_mtime_ns
         page.show_job(f"chg:{self.paper}:{d['id']}:{pdfm}", lambda w, h, d=d, pane=pane: quick.change_image(pane, d, w, h))
+
+    # ---- the view: PDF page or source text -------------------------------------------
+    def apply_view(self) -> None:
+        view = self.query_one("#changes-view")
+        view.set_class(self.text_view, "textmode")
+        self.query_one("#cpage").display = not self.text_view
+        self.query_one("#cscroll").display = self.text_view
+
+    def action_toggle_view(self) -> None:
+        self.text_view = not self.text_view
+        self.apply_view()
+        self.say("showing the " + ("source text around the change (colours: green added, red deleted, cyan comment)"
+                                   if self.text_view else "PDF page of the change"))
+        self.show_change()
+
+    def newest_tex(self) -> float:
+        if not self.paper:
+            return 0.0
+        return max((f.stat().st_mtime for f in self.paper.glob("*.tex")), default=0.0)
+
+    def watch(self) -> None:
+        """Edits that arrive from outside (the agent, nvim): reload the list, rebuild the PDF."""
+        if self.level != "changes" or not self.paper:
+            return
+        m = self.newest_tex()
+        if m != self.seen_mtime:
+            self.seen_mtime = m
+            self.load_changes()
+            self.schedule_compile()
+
+    def schedule_compile(self, delay: float = 10.0) -> None:
+        """Rebuild the PDF once the paper has been quiet for a while (as in the editor)."""
+        if self.compile_timer is not None:
+            self.compile_timer.stop()
+        self.compile_timer = self.set_timer(delay, self.auto_compile)
+
+    def auto_compile(self) -> None:
+        if self.level == "changes" and self.paper and not self.compiling \
+                and self.newest_tex() != self.compiled_for:
+            self.compile_paper(self.paper)
+
+    @work(thread=True, group="compile")
+    def compile_paper(self, root: Path) -> None:
+        from . import compile as C
+        from .state import Project
+        self.compiling = True
+        say = lambda s: self.call_from_thread(self.say, s)  # noqa: E731
+        try:
+            proj = Project.open(root)
+            self.compiled_for = self.newest_tex()
+            say(f"compiling {root.name} ...")
+            res = C.run(proj)
+            if res.ok:
+                say(f"compiled in {res.seconds:.0f}s")
+            else:
+                first = res.errors[0] if res.errors else None
+                say(f"compile FAILED: {len(res.errors)} error(s)"
+                    + (f"; first: l.{first.line} {first.message[:80]}" if first else "")
+                    + "  (the PDF stays at the last clean build)")
+        except RedlineError as e:
+            say(f"compile failed: {e}")
+        finally:
+            self.compiling = False
+        self.call_from_thread(self.show_change)
 
     # ---- deciding ----------------------------------------------------------------
     def _decide(self, verb: str, fn) -> None:
@@ -668,6 +767,7 @@ class Full(App):
         try:
             fn(Project.open(root), d["id"])
             self.call_from_thread(self.say, f"{verb} {d['label']} ({d['kind']}, l.{d['lines'][0]})   u undoes")
+            self.call_from_thread(self.schedule_compile)
         except RedlineError as e:
             self.call_from_thread(self.say, f"{verb} failed: {e}")
         self.call_from_thread(self.load_changes)
@@ -686,6 +786,7 @@ class Full(App):
         from .state import Project
         try:
             self.call_from_thread(self.say, quick.undo(Project.open(self.paper)))
+            self.call_from_thread(self.schedule_compile)
         except RedlineError as e:
             self.call_from_thread(self.say, f"undo failed: {e}")
         self.call_from_thread(self.load_changes)
@@ -697,20 +798,25 @@ class Full(App):
     def action_discuss(self) -> None:
         self.talk("ask")
 
+    def action_chat(self) -> None:
+        self.talk("chat")
+
     def talk(self, how: str) -> None:
-        d = self.change()
-        if not d or not self.paper:
+        root = self.paper if self.level == "changes" else (self.selected().path if self.selected() else None)
+        d = self.change() if how != "chat" and self.level == "changes" else None
+        if not root or (how != "chat" and not d):
             return
         from . import quick
-        if not quick.alive(self.paper):
-            self.say(f"starting {quick.session(self.paper)} in the background while you write ...")
-            self.start_session(self.paper)
-        title = (f"Note on {d['label']} (stays pending as %N; the agent revises it):" if how == "note"
-                 else f"Ask the agent about {d['label']} (nothing is edited):")
+        if not quick.alive(root):
+            self.say(f"starting {quick.session(root)} in the background while you write ...")
+            self.start_session(root)
+        title = {"note": f"Note on {d['label']} (stays pending as %N; the agent revises it):" if d else "",
+                 "ask": f"Ask the agent about {d['label']} (nothing is edited):" if d else "",
+                 "chat": f"Talk to the agent about {registry.session_name(root)[8:]} (nothing is edited unless you ask):"}[how]
 
         def done(text) -> None:
             if text:
-                self.send(how, self.paper, d, text)
+                self.send(how, root, d, text)
         self.push_screen(Say(title), done)
 
     @work(thread=True, group="session")
@@ -731,8 +837,10 @@ class Full(App):
             if how == "note":
                 quick.mark_note(Project.open(root), d["id"], text)
                 msg = quick.note_message(d, text)
-            else:
+            elif how == "ask":
                 msg = quick.ask_message(d, text)
+            else:
+                msg = quick.chat_message(Project.open(root).cfg.project_name, text)
             say("waiting for the agent ..." if not quick.alive(root) else "sending ...")
             name = quick.send_to_agent(root, msg)
             say(f"sent to the agent in {name}; read the answer there (enter opens it)")
@@ -825,6 +933,9 @@ class Full(App):
         self.push_screen(Confirm(f"Push [b]{escape(it.name)}[/] to Overleaf?"), go)
 
     def action_compile(self) -> None:
+        if self.level == "changes" and self.paper:
+            self.compiled_for = 0.0
+            return self.compile_paper(self.paper)
         from . import compile as C
         self._job("compile", lambda proj: C.format_report(C.run(proj)))
 

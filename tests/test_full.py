@@ -216,3 +216,69 @@ def test_tui_vim_motions_and_review(home):
             await pilot.pause(0.3)
             assert app.query_one("#papers").row_count == 4
     asyncio.run(go())
+
+
+def test_context_colours_each_kind(home):
+    from redline import quick
+    from redline.state import Project
+    d = make_paper(home)
+    (d / "main.tex").write_text(
+        "\\documentclass{article}\n\\begin{document}\n\\section{A}\nOne \\added{plus} two \\deleted{minus} "
+        "three \\replaced{new}{old} four \\chcomment{why}.\n\\end{document}\n")
+    rows, doc = quick.load(Project.open(d))
+    rep = next(r for r in rows if r["kind"] == "replaced")
+    text = quick.context(doc, rep["id"], 2, 2)
+    assert "[green]plus[/]" in text and "[red strike]minus[/]" in text
+    assert "bold red strike underline]old[/]" in text and "bold green underline]new" in text  # the chosen one is bold
+    assert "cyan" in text and "\\[why]" in text                        # comment, shown in brackets
+    assert "▶" in text and "[dim]" in text
+
+
+def test_stale_pdf_is_not_highlighted(home):
+    import os, time
+    from redline import quick, compile as C
+    from redline.state import Project
+    d = make_paper(home)
+    proj = Project.open(d)
+    pdf = C.view_pdf(proj)
+    pdf.parent.mkdir(parents=True, exist_ok=True)
+    pdf.write_bytes(b"%PDF-1.4")
+    old = time.time() - 3600
+    os.utime(pdf, (old, old))
+    assert quick.stale(proj)
+    rows, _ = quick.load(proj)
+    pane = quick.change_pane(proj)
+    msg = quick.change_image(pane, rows[0], 800, 1000)
+    assert isinstance(msg, str) and "out of date" in msg
+
+
+def test_tui_text_view_and_chat(home, monkeypatch):
+    from redline import quick
+    d = make_paper(home, "alpha")
+    (d / "main.tex").write_text(CHANGES)
+    sent, started = [], []
+    monkeypatch.setattr(quick, "alive", lambda root: False)
+    monkeypatch.setattr(quick, "ensure_session", lambda root: started.append(root) or "s")
+    monkeypatch.setattr(quick, "send_to_agent", lambda root, text: sent.append(text) or "s")
+    import os
+    os.environ.pop("TMUX", None)
+    from redline.fulltui import Full
+
+    async def go():
+        app = Full()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await pilot.pause(0.6)
+            await pilot.press("l")
+            await pilot.pause(1.0)
+            assert app.text_view and app.query_one("#cscroll").display and not app.query_one("#cpage").display
+            await pilot.press("v")
+            assert not app.text_view and app.query_one("#cpage").display
+            await pilot.press("v")
+            await pilot.press("t")
+            await pilot.pause(0.3)
+            for ch in "hello":
+                await pilot.press(ch)
+            await pilot.press("enter")
+            await pilot.pause(1.0)
+    asyncio.run(go())
+    assert started and "Message about the paper" in sent[0] and "hello" in sent[0]

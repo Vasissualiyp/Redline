@@ -388,9 +388,14 @@ Papers carry the name they have on Overleaf. Papers: `enter`/`o` open the tmux w
 
 **Quick menu** (`l` on a paper, `h` back): every pending change with the PDF page that holds it, highlighted.
 `a` accept, `x` reject (journaled, `u` undoes), `n` note for the agent (kept pending as `%N`; the agent revises it),
-`d` ask the agent without editing, `enter` opens the editor at the change, `c` compile. The agent is the one in the
+`d` ask the agent without editing, `t` talk to the agent about the paper (also on the paper list), `enter` opens the
+editor at the change, `c` compile, `v` switches between the PDF page and the **text view**: the source around the change
+with green added, red struck-through deleted, cyan comments and the chosen change in bold (no kitty graphics needed;
+it is the default on terminals without them). The agent is the one in the
 paper's tmux session: it is started in the background when you begin writing a message (the list shows it as
-running) and reused afterwards. The PDF is the last clean build, so recompile (`c`) after accepting to refresh it.
+running) and reused afterwards. The PDF is rebuilt by itself 10 s after the paper last changed (also for edits from the agent or the editor).
+While it is older than the source, or the paper does not compile, no highlight is drawn (it would land on the wrong
+line) and the reason is shown instead, e.g. the first LaTeX error.
 The right side shows the first page of the highlighted paper's last build (kitty graphics, like the PDF pane;
 `REDLINE_PREVIEW=0` turns it off), so papers are recognisable at a glance. Papers never compiled say so; press `c`.
 
