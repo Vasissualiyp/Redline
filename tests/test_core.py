@@ -241,3 +241,11 @@ def test_insert_does_not_capture_existing_comment(src):
     assert ym, "standalone YM comment must stay standalone"
     new = [i for i in d2.items if i.kind == "added" and i.new(out) == "extra"][0]
     assert new.comment is None
+
+
+def test_write_default_config_parses(tmp_path):
+    import tomllib
+    from redline import config
+    (tmp_path / "a.tex").write_text("\\documentclass{article}\n\\begin{document}\n\\end{document}\n")
+    path = config.write_default(tmp_path, "code")
+    assert tomllib.loads(path.read_text())["evidence_collection"] == "Redline evidence/{paper}"

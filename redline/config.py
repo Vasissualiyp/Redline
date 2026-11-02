@@ -34,8 +34,8 @@ ols = "ols"
 overleaf_project = ""
 # Comments matching this regex survive bulk accepts.
 keep_comment_regex = "TODO"
-# Zotero collection for the evidence notes behind % VERIFIED lines ({paper} = this folder's name)
-evidence_collection = "Redline evidence/{paper}"
+# Zotero collection for the evidence notes behind % VERIFIED lines ({{paper}} = this folder's name)
+evidence_collection = "Redline evidence/{{paper}}"
 # Shell command run before pushing (e.g. rsync fresh plots into light/).
 pre_push = ""
 compile_timeout = 600
