@@ -4,15 +4,9 @@
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
-    # Only the overleaf-sync derivation, not the papers repo it lives in.
-    # After editing it there: nix flake update overleaf-sync
-    overleaf-sync = {
-      url = "file+file:///home/vasilii/Software/Overleaf-nix-flake/overleaf-sync.nix";
-      flake = false;
-    };
   };
 
-  outputs = { self, nixpkgs, flake-utils, overleaf-sync }:
+  outputs = { self, nixpkgs, flake-utils }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
@@ -40,7 +34,7 @@
           '';
         };
 
-        ols = pkgs.callPackage overleaf-sync { };
+        ols = pkgs.callPackage ./nix/overleaf-sync.nix { };
         # bin only, so ols' python3 dependencies stay off PYTHONPATH
         ols-bin = pkgs.runCommand "ols-bin" { } ''
           mkdir -p $out/bin

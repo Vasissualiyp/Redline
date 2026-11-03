@@ -34,23 +34,10 @@
         "type": "github"
       }
     },
-    "overleaf-sync": {
-      "flake": false,
-      "locked": {
-        "narHash": "sha256-dHJ/W5vV7VsApIyM7K1ui5fo0toC3bPC3dbOghYZdk0=",
-        "type": "file",
-        "url": "file:///home/vasilii/Software/Overleaf-nix-flake/overleaf-sync.nix"
-      },
-      "original": {
-        "type": "file",
-        "url": "file:///home/vasilii/Software/Overleaf-nix-flake/overleaf-sync.nix"
-      }
-    },
     "root": {
       "inputs": {
         "flake-utils": "flake-utils",
-        "nixpkgs": "nixpkgs",
-        "overleaf-sync": "overleaf-sync"
+        "nixpkgs": "nixpkgs"
       }
     },
     "systems": {

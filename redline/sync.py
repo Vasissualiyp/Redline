@@ -84,9 +84,9 @@ def ols_command(setting: str = "ols") -> list[str]:
     cmd = shlex.split(setting)
     if shutil.which(cmd[0]):
         return cmd
-    flake = Path.home() / "Software/Overleaf-nix-flake"
-    if flake.exists() and shutil.which("nix"):
-        return ["nix", "develop", str(flake), "--command", *cmd]
+    flake = Path(__file__).resolve().parent.parent
+    if (flake / "flake.nix").exists() and shutil.which("nix"):
+        return ["nix", "develop", f"{flake}#paper", "--command", *cmd]
     raise RedlineError(f"{cmd[0]!r} not found; set `ols` in .redline.toml")
 
 

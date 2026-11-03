@@ -28,9 +28,9 @@ redline open                                  # tmux session redline-<paper>
 ```
 
 The `paper` shell expects TeX (latexmk and synctex), nvim, kitty and zotero-mcp
-to come from the system. `ols` is built from `overleaf-sync.nix` in the
-Overleaf-sync-nix-flake repo, which this flake takes as a single-file input.
-After you change that file, run `nix flake update overleaf-sync`.
+to come from the system. `ols` (overleaf-sync, patched) is built from
+`nix/overleaf-sync.nix` in this repo, so the flake has no external inputs
+besides nixpkgs and flake-utils.
 `packages.redline` can instead go into home-manager or `nix profile install`.
 
 `redline init` does three things:
