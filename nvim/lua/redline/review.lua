@@ -220,6 +220,16 @@ function M.home()
   end))
 end
 
+--- Switch this running paper between one tmux session and two (the PDF view alone in the second).
+function M.sessions(to)
+  local st = core.state()
+  vim.system(rpc.shell("sessions " .. (to or "toggle")), { cwd = st and st.root or vim.fn.getcwd(), text = true,
+    env = st and { REDLINE_ROOT = st.root } or nil }, vim.schedule_wrap(function(r)
+    local out = ((r.stdout or "") .. (r.stderr or "")):gsub("%s+$", "")
+    vim.notify("redline: " .. out, r.code == 0 and vim.log.levels.INFO or vim.log.levels.WARN)
+  end))
+end
+
 function M.accept_all()
   if vim.fn.confirm("Accept every change in the paper (honouring %N/%X)?", "&Yes\n&No", 2) == 1 then
     local res = run_op({ action = "accept", selector = { all = true } })
@@ -508,6 +518,7 @@ local REVIEW_KEYS = {
   { "n", "A", function() M.resolve_range("accept", false) end, "accept section (or heading under cursor)" },
   { "x", "A", function() M.resolve_range("accept", true) end, "accept selection" },
   { "n", "R", function() M.resolve_range("reject", false) end, "reject section" },
+  { "n", "gS", function() M.sessions("toggle") end, "switch between one tmux session and two (PDF in its own)" },
   { "n", "gh", M.home, "back to the redline full list (all papers)" },
   { "n", "gA", M.accept_all_unmarked, "accept ALL edits, ignoring %Y/%N/%X (asks first)" },
   { "x", "R", function() M.resolve_range("reject", true) end, "reject selection" },

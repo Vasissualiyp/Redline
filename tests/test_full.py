@@ -573,7 +573,7 @@ def test_two_sessions_open_and_quit_together(tmp_path, monkeypatch):
     monkeypatch.delenv("REDLINE_ROOT", raising=False)
     monkeypatch.delenv("TMUX", raising=False)
     monkeypatch.delenv("TMUX_PANE", raising=False)
-    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", tempfile.mkdtemp(prefix="rl", dir="/tmp"))  # nvim's socket path must be short
     root = tmp_path / "pair"
     root.mkdir()
     (root / "main.tex").write_text(PAPER)
@@ -639,3 +639,45 @@ def test_open_cli_flags(monkeypatch):
     cli.main(["open", "--one-session", "--no-attach"])
     cli.main(["open", "--pdf", "--no-attach"])
     assert got == [(False, False, True), (False, False, False), (False, True, None)]
+
+
+@pytest.mark.skipif(not __import__("shutil").which("tmux") or not __import__("shutil").which("nvim"), reason="needs tmux and nvim")
+def test_switch_between_one_and_two_sessions_while_running(tmp_path, monkeypatch):
+    import subprocess, tempfile, time
+    from redline import launcher
+    monkeypatch.setenv("TMUX_TMPDIR", tempfile.mkdtemp(prefix="rl", dir="/tmp"))
+    for var in ("TMUX", "TMUX_PANE", "REDLINE_ROOT"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", tempfile.mkdtemp(prefix="rl", dir="/tmp"))  # nvim's socket path must be short
+    root = tmp_path / "live"
+    root.mkdir()
+    (root / "main.tex").write_text(PAPER)
+    config.write_default(root)
+    config.set_key(root, "agent", "cat")
+    t = lambda *a: subprocess.run(["tmux", *a], capture_output=True, text=True).stdout.split()  # noqa: E731
+    roles = lambda s: sorted(t("list-panes", "-s", "-t", "=" + s, "-F", "#{@redline_role}"))  # noqa: E731
+    try:
+        launcher.open_workspace(root, attach=False)                      # one session
+        assert t("list-sessions", "-F", "#{session_name}") == ["redline-live"]
+        assert roles("redline-live") == ["agent", "paper", "preview"]
+        prev = launcher._role_pane("redline-live", "preview")
+        pid = t("display", "-p", "-t", prev, "#{pane_pid}")
+        launcher.switch_sessions(root, "two")                            # ... to two, while running
+        assert sorted(t("list-sessions", "-F", "#{session_name}")) == ["redline-live", "redline-live-pdf"]
+        assert roles("redline-live") == ["agent", "paper"] and roles("redline-live-pdf") == ["preview"]
+        assert launcher._role_pane("redline-live-pdf", "preview") == prev          # moved, not restarted
+        assert t("display", "-p", "-t", prev, "#{pane_pid}") == pid
+        assert launcher.switch_sessions(root, "two").startswith("already")
+        launcher.switch_sessions(root, "one")                            # ... and back
+        assert t("list-sessions", "-F", "#{session_name}") == ["redline-live"]
+        assert roles("redline-live") == ["agent", "paper", "preview"]
+        assert t("display", "-p", "-t", prev, "#{pane_pid}") == pid
+        launcher.switch_sessions(root, "toggle")
+        assert len(t("list-sessions", "-F", "#{session_name}")) == 2
+        launcher.quit_now("redline-live")                                # still closes both
+        time.sleep(0.5)
+        assert t("list-sessions", "-F", "#{session_name}") == []
+        with pytest.raises(Exception, match="not running"):
+            launcher.switch_sessions(root, "two")
+    finally:
+        subprocess.run(["tmux", "kill-server"], capture_output=True)

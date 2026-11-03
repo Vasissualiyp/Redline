@@ -77,6 +77,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-verification", action="store_true",
                    help="this project does not cite papers that must be refchecked against Zotero")
 
+    p = sub.add_parser("sessions", help="switch this running paper between one tmux session and two (PDF alone)")
+    p.add_argument("to", nargs="?", choices=["one", "two", "toggle", "status"], default="toggle")
+    p.add_argument("--save", action="store_true", help="also make it the paper's setting (two_sessions)")
+
     p = sub.add_parser("verification", help="refcheck enforcement for this paper: status | on | off")
     p.add_argument("state", nargs="?", choices=["on", "off", "status"], default="status")
 
@@ -320,6 +324,20 @@ def _run(a: argparse.Namespace) -> int:
             return 0
         win = L.find_window(a.session) if a.session else None
         print(L.cycle(-1 if a.prev else 1, win) if (a.next or a.prev) else L.apply(a.name, win))
+        return 0
+    if a.cmd == "sessions":
+        from . import config
+        from . import launcher as LA
+        root = config.find_root()
+        if a.to == "status":
+            two = LA._has_session(LA.pdf_session_name(LA.session_name_for(root)))
+            print("two sessions" if two else "one session")
+            return 0
+        print(LA.switch_sessions(root, a.to))
+        if a.save and a.to != "status":
+            two = LA._has_session(LA.pdf_session_name(LA.session_name_for(root)))
+            config.set_key(root, "two_sessions", two)
+            print(f"saved: two_sessions = {str(two).lower()}")
         return 0
     if a.cmd == "verification":
         from . import config

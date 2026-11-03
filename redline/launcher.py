@@ -17,6 +17,7 @@ from pathlib import Path
 from . import config as _config
 from . import sync as _sync
 from . import agentpick
+from .model import RedlineError
 from .state import Project
 
 REPO = Path(__file__).resolve().parent.parent
@@ -127,6 +128,10 @@ def in_login_shell(cmd: str) -> str:
     return f"{shlex.quote(sh)} -lc {shlex.quote('exec ' + cmd)}"
 
 
+def session_name_for(root: Path) -> str:
+    return "redline-" + re.sub(r"[^A-Za-z0-9_-]+", "-", root.name).strip("-")
+
+
 def pdf_session_name(name: str) -> str:
     return name + "-pdf"
 
@@ -196,6 +201,68 @@ def open_workspace(root: Path | None, attach: bool = True, pdf: bool = False, tw
     else:
         os.execvp("tmux", ["tmux", "attach-session", "-t", f"={target}"])
     return 0
+
+
+def _role_pane(session: str, role: str) -> str | None:
+    out = subprocess.run(["tmux", "list-panes", "-s", "-t", f"={session}", "-F", "#{pane_id} #{@redline_role}"],
+                         capture_output=True, text=True).stdout
+    for ln in out.splitlines():
+        pid, _, r = ln.partition(" ")
+        if r == role:
+            return pid
+    return None
+
+
+def switch_sessions(root: Path, to: str = "toggle") -> str:
+    """Change a running paper between one tmux session and two (nvim + agent | the PDF view alone).
+
+    The preview pane is moved, not restarted: the same process, socket and render state continue.
+    Going to two sessions creates the PDF session; it is up to you to attach it (`redline open --pdf`).
+    Going back to one joins the PDF pane into the editor window and closes the PDF session."""
+    name = session_name_for(root)
+    pdf_name = pdf_session_name(name)
+    if not _has_session(name) and not _has_session(pdf_name):
+        raise RedlineError(f"{name} is not running; start it with `redline open` first")
+    is_two = _has_session(pdf_name)
+    if to == "toggle":
+        to = "one" if is_two else "two"
+    from . import layout as _layout
+    proj = Project.open(root)
+    if to == "two":
+        if is_two:
+            return f"already two sessions ({name} + {pdf_name})"
+        prev = _role_pane(name, "preview")
+        if not prev:
+            raise RedlineError("the session has no PDF pane to move")
+        rl = _shell(redline_cmd())
+        envs = ["-e", f"REDLINE_ROOT={root}", "-e", f"REDLINE_CMD={_env_prefix()}{rl}"]
+        _tmux("new-session", "-d", "-s", pdf_name, "-n", "tmp", "-x", "200", "-y", "50", "-c", str(root), *envs,
+              "sleep 600")
+        _tmux("break-pane", "-d", "-s", prev, "-t", f"={pdf_name}:", "-n", "pdf")
+        _tmux("kill-window", "-t", f"={pdf_name}:tmp")
+        _tmux("set-option", "-t", f"={name}:", "@redline_pair", pdf_name)
+        _tmux("set-option", "-t", f"={pdf_name}:", "@redline_pair", name)
+        try:
+            _layout.apply(proj.cfg.layout, _layout.find_window(f"={name}"))
+        except Exception:
+            pass
+        return f"two sessions: {name} (nvim + agent) and {pdf_name} (PDF); attach the second with `redline open --pdf`"
+    # to one
+    if not is_two:
+        return f"already one session ({name})"
+    prev = _role_pane(pdf_name, "preview")
+    agent = _role_pane(name, "agent") or _role_pane(name, "paper")
+    if not prev or not agent:
+        raise RedlineError("cannot find the panes to join")
+    _tmux("join-pane", "-v", "-l", "50%", "-s", prev, "-t", agent)   # the PDF session ends with its last pane
+    if _has_session(pdf_name):
+        subprocess.run(["tmux", "kill-session", "-t", f"={pdf_name}"], capture_output=True)
+    subprocess.run(["tmux", "set-option", "-u", "-t", f"={name}:", "@redline_pair"], capture_output=True)
+    try:
+        _layout.apply(proj.cfg.layout, _layout.find_window(f"={name}"))
+    except Exception:
+        pass
+    return f"one session: {name} (the PDF is a pane again)"
 
 
 def _has_preview_pane(session: str) -> bool:

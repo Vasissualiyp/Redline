@@ -476,3 +476,8 @@ both. Layout presets leave the missing PDF pane out.
 One-off, without changing the paper's setting: `redline open --two-sessions` (or `redline full open NAME --two-sessions`;
 `--one-session` forces a single session), and in `redline full` **shift+enter** (or `O`, for terminals that cannot tell
 shift+enter from enter) opens the paper in two sessions; the list marks such papers `running ×2`.
+
+**Switching while it runs:** `gS` in review mode (`:Redline sessions [one|two|toggle]`, or `redline sessions` from a shell;
+`--save` also stores the choice as the paper's setting) moves the PDF pane out into a new `-pdf` session, or joins it back
+into the editor window and closes the PDF session. The preview process is moved, not restarted, so nothing is re-rendered
+or lost. Going to two sessions only creates the second one; attach it yourself with `redline open --pdf`.
