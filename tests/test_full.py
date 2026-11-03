@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 import json
 import subprocess
 
@@ -17,7 +18,10 @@ def home(tmp_path, monkeypatch):
     cfg.write_text(f'roots = ["{root}"]\n')
     monkeypatch.setattr(config, "GLOBAL_CONFIG", cfg)
     monkeypatch.setattr(registry, "sessions", lambda: set())
-    return root
+    import os
+    os.environ.pop("REDLINE_ROOT", None)   # `redline -C` of an earlier test sets it for the whole process
+    yield root
+    os.environ.pop("REDLINE_ROOT", None)
 
 
 def make_paper(root, name="alpha"):
@@ -557,3 +561,45 @@ def test_single_editor_flag(home, capsys):
     capsys.readouterr()
     assert cli.main(["-C", str(a), "sync", "auto", "--enabled"]) == 0
     assert '"enabled": true' in capsys.readouterr().out
+
+
+@pytest.mark.skipif(not __import__("shutil").which("tmux") or not __import__("shutil").which("nvim"), reason="needs tmux and nvim")
+def test_two_sessions_open_and_quit_together(tmp_path, monkeypatch):
+    import subprocess, time
+    from redline import launcher
+    import tempfile
+    sock_dir = Path(tempfile.mkdtemp(prefix="rl", dir="/tmp"))   # tmux socket paths are short
+    monkeypatch.setenv("TMUX_TMPDIR", str(sock_dir))
+    monkeypatch.delenv("REDLINE_ROOT", raising=False)
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    root = tmp_path / "pair"
+    root.mkdir()
+    (root / "main.tex").write_text(PAPER)
+    config.write_default(root)
+    config.set_key(root, "agent", "cat")
+    config.set_key(root, "two_sessions", True)
+    t = lambda *a: subprocess.run(["tmux", *a], capture_output=True, text=True).stdout.split()  # noqa: E731
+    try:
+        assert launcher.open_workspace(root, attach=False) == 0
+        assert sorted(t("list-sessions", "-F", "#{session_name}")) == ["redline-pair", "redline-pair-pdf"]
+        assert sorted(t("list-panes", "-s", "-t", "=redline-pair", "-F", "#{@redline_role}")) == ["agent", "paper"]
+        assert t("list-panes", "-s", "-t", "=redline-pair-pdf", "-F", "#{@redline_role}") == ["preview"]
+        st = launcher.quit_status("redline-pair")
+        assert any("pdf" in w for w in st["windows"])
+        launcher.open_workspace(root, attach=False)  # again: nothing is duplicated
+        assert len(t("list-sessions", "-F", "#{session_name}")) == 2
+        launcher.quit_now("redline-pair-pdf")        # either side closes both
+        time.sleep(0.5)
+        assert t("list-sessions", "-F", "#{session_name}") == []
+    finally:
+        subprocess.run(["tmux", "kill-server"], capture_output=True)
+
+
+def test_two_sessions_is_a_paper_setting(home, capsys):
+    from redline import cli
+    a = make_paper(home, "alpha")
+    assert config.load(a).two_sessions is False
+    assert cli.main(["full", "set", "alpha", "two_sessions=true"]) == 0
+    assert config.load(a).two_sessions is True

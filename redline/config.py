@@ -50,6 +50,10 @@ cross_paper_access = true
 single_editor = false
 auto_sync_seconds = 20
 auto_sync_poll = 120
+# Two tmux sessions for this paper: one with nvim + the agent, one with only the PDF view (for a
+# second monitor or terminal). The PDF follows the editor exactly as a pane would; quitting either
+# closes both. Attach the PDF one with `redline open --pdf`.
+two_sessions = false
 # Shell command run before pushing (e.g. rsync fresh plots into light/).
 pre_push = ""
 compile_timeout = 600
@@ -131,6 +135,7 @@ class Config:
     enforce_verification: bool = True
     cross_paper_access: bool = True
     single_editor: bool = False
+    two_sessions: bool = False
     auto_sync_seconds: int = 20
     auto_sync_poll: int = 120
     category: str = ""      # tree path in the `redline full` list, e.g. "Papers/Pop III"
@@ -213,6 +218,8 @@ def load(root: Path | None = None) -> Config:
             setattr(cfg, k, str(data[k]))
     if "enforce_verification" in data:
         cfg.enforce_verification = bool(data["enforce_verification"])
+    if "two_sessions" in data:
+        cfg.two_sessions = bool(data["two_sessions"])
     if "single_editor" in data:
         cfg.single_editor = bool(data["single_editor"])
     for k in ("auto_sync_seconds", "auto_sync_poll"):

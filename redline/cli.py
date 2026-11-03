@@ -160,6 +160,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("open", help="start the tmux workspace")
     p.add_argument("dir", nargs="?")
     p.add_argument("--no-attach", action="store_true")
+    p.add_argument("--pdf", action="store_true", help="two_sessions papers: attach the PDF session instead")
 
     a = ap.parse_args(argv)
     if a.root:
@@ -195,13 +196,13 @@ def _categories_cmd(a: argparse.Namespace) -> int:
         print("removed " + ", ".join(gone))
     else:  # set NAME key=value
         key, _, val = (a.extra or "").partition("=")
-        if key not in ("category", "notes", "enforce_verification", "cross_paper_access", "single_editor", "code_dir",
+        if key not in ("category", "notes", "enforce_verification", "cross_paper_access", "single_editor", "two_sessions", "code_dir",
                        "overleaf_project") or not _:
             print("usage: redline full set NAME key=value (category, notes, enforce_verification, code_dir, "
                   "overleaf_project)", file=sys.stderr)
             return 2
         root = registry.find(a.name)
-        config.set_key(root, key, val.lower() in ("true", "1", "yes", "on") if key in ("enforce_verification", "cross_paper_access", "single_editor") else val)
+        config.set_key(root, key, val.lower() in ("true", "1", "yes", "on") if key in ("enforce_verification", "cross_paper_access", "single_editor", "two_sessions") else val)
         print(f"{root.name}: {key} = {val}")
     return 0
 
@@ -266,7 +267,7 @@ def _run(a: argparse.Namespace) -> int:
         return 0
     if a.cmd == "open":
         from .launcher import open_workspace
-        return open_workspace(Path(a.dir).expanduser() if a.dir else None, attach=not a.no_attach)
+        return open_workspace(Path(a.dir).expanduser() if a.dir else None, attach=not a.no_attach, pdf=a.pdf)
     if a.cmd == "agent":
         return _agent_cmd(a)
     if a.cmd == "full":

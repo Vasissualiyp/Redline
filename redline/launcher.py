@@ -127,7 +127,15 @@ def in_login_shell(cmd: str) -> str:
     return f"{shlex.quote(sh)} -lc {shlex.quote('exec ' + cmd)}"
 
 
-def open_workspace(root: Path | None, attach: bool = True) -> int:
+def pdf_session_name(name: str) -> str:
+    return name + "-pdf"
+
+
+def _has_session(name: str) -> bool:
+    return subprocess.run(["tmux", "has-session", "-t", f"={name}"], capture_output=True).returncode == 0
+
+
+def open_workspace(root: Path | None, attach: bool = True, pdf: bool = False) -> int:
     root = _config.find_root(root)
     fresh = not (root / _config.CONFIG_NAME).exists()
     _config.write_default(root)
@@ -142,7 +150,9 @@ def open_workspace(root: Path | None, attach: bool = True) -> int:
         return 1
 
     name = "redline-" + re.sub(r"[^A-Za-z0-9_-]+", "-", root.name).strip("-")
-    exists = subprocess.run(["tmux", "has-session", "-t", f"={name}"], capture_output=True).returncode == 0
+    two = proj.cfg.two_sessions
+    pdf_name = pdf_session_name(name)
+    exists = _has_session(name)
     if not exists:
         rl = _shell(redline_cmd())
         env_prefix = _env_prefix()
@@ -159,9 +169,10 @@ def open_workspace(root: Path | None, attach: bool = True) -> int:
         agent = _tmux("split-window", "-h", "-l", "40%", "-t", editor, "-c", str(root),
                       "-P", "-F", "#{pane_id}", in_login_shell(agentpick.command(proj)))
         _tmux("set-option", "-p", "-t", agent, "@redline_role", "agent")
-        prev = _tmux("split-window", "-v", "-l", "50%", "-t", agent, "-c", str(root),
-                     "-P", "-F", "#{pane_id}", in_login_shell(f"{env_prefix}{rl} preview"))
-        _tmux("set-option", "-p", "-t", prev, "@redline_role", "preview")
+        if not two:  # one session: the PDF is a pane here; two sessions: it lives in its own, below
+            prev = _tmux("split-window", "-v", "-l", "50%", "-t", agent, "-c", str(root),
+                         "-P", "-F", "#{pane_id}", in_login_shell(f"{env_prefix}{rl} preview"))
+            _tmux("set-option", "-p", "-t", prev, "@redline_role", "preview")
         _tmux("select-pane", "-t", editor)
         _tmux("set-option", "-p", "-t", editor, "@redline_role", "paper")
         code = proj.cfg.code_dir if proj.cfg.code_dir and Path(proj.cfg.code_dir).is_dir() else str(root)
@@ -171,16 +182,40 @@ def open_workspace(root: Path | None, attach: bool = True) -> int:
         _tmux("select-window", "-t", paper)
         # the arrangement saved when this paper was last quit, else the preset
         restore_layout(name, root, proj.cfg.layout)
+    if two and not _has_session(pdf_name) and not _has_preview_pane(name):
+        _start_pdf_session(root, name, pdf_name)
     bind_quit_key(proj.cfg.tmux_quit_key)
     agentpick.bind_key(proj.cfg.tmux_model_key)
+    target = pdf_name if (pdf and two) else name
     if not attach:
-        print(name)
+        print(name + (f" (PDF session: {pdf_name})" if two else ""))
         return 0
     if os.environ.get("TMUX"):
-        _tmux("switch-client", "-t", f"={name}")
+        _tmux("switch-client", "-t", f"={target}")
     else:
-        os.execvp("tmux", ["tmux", "attach-session", "-t", f"={name}"])
+        os.execvp("tmux", ["tmux", "attach-session", "-t", f"={target}"])
     return 0
+
+
+def _has_preview_pane(session: str) -> bool:
+    out = subprocess.run(["tmux", "list-panes", "-s", "-t", f"={session}", "-F", "#{@redline_role}"],
+                         capture_output=True, text=True).stdout.split()
+    return "preview" in out
+
+
+def _start_pdf_session(root: Path, name: str, pdf_name: str) -> None:
+    """The second session of a two-session paper: only the PDF view, same preview process and socket
+    as the pane would have, so the editor drives it exactly the same way."""
+    rl = _shell(redline_cmd())
+    envs = ["-e", f"REDLINE_ROOT={root}", "-e", f"REDLINE_CMD={_env_prefix()}{rl}"]
+    cols, rows = shutil.get_terminal_size((240, 60))
+    pane = _tmux("new-session", "-d", "-P", "-F", "#{pane_id}", "-s", pdf_name, "-n", "pdf",
+                 "-x", str(cols), "-y", str(rows), "-c", str(root), *envs,
+                 in_login_shell(f"{_env_prefix()}{rl} preview"))
+    _tmux("set-option", "-p", "-t", pane, "@redline_role", "preview")
+    # the two sessions know each other: quitting one closes both
+    _tmux("set-option", "-t", f"={name}:", "@redline_pair", pdf_name)
+    _tmux("set-option", "-t", f"={pdf_name}:", "@redline_pair", name)
 
 
 # ---- back to the all-papers list ------------------------------------------------
@@ -235,10 +270,21 @@ def _session_root(session: str) -> Path | None:
     return Path(line.split("=", 1)[1]) if r.returncode == 0 and "=" in line else None
 
 
+def _pair(session: str) -> list[str]:
+    """The other session of a two-session paper (empty for a normal one)."""
+    r = subprocess.run(["tmux", "show-option", "-qv", "-t", f"={session}:", "@redline_pair"],
+                       capture_output=True, text=True)
+    other = r.stdout.strip()
+    return [other] if other and _has_session(other) else []
+
+
 def quit_status(session: str) -> dict:
     """What would be lost or interrupted by closing the session."""
     root = _session_root(session)
     windows = _tmux("list-windows", "-t", f"={session}", "-F", "#{window_name}").splitlines()
+    for other in _pair(session):
+        windows += [f"{w} (session {other})" for w in
+                    _tmux("list-windows", "-t", f"={other}", "-F", "#{window_name}").splitlines()]
     st = {"session": session, "redline": root is not None, "windows": windows,
           "agent_running": "merge" in windows, "unpushed": [], "root": str(root or "")}
     if root is None:
@@ -307,13 +353,20 @@ def restore_layout(session: str, root: Path, fallback: str) -> None:
 
 
 def quit_now(session: str) -> None:
+    """Save, then close the session and, for a two-session paper, its partner too."""
     root = _session_root(session)
+    pair = _pair(session)
     if root is not None:
+        main = session
+        if pair and session.endswith("-pdf"):  # asked from the PDF session: the editor session is the other one
+            main = pair[0]
         try:
-            save_layout(session, root)
+            save_layout(main, root)
         except Exception as e:  # never block quitting
             print(f"layout not saved: {e}", file=sys.stderr)
         Project.open(root).flush_editor()  # nvim writes its buffer first
+    for other in pair:
+        subprocess.run(["tmux", "kill-session", "-t", f"={other}"], capture_output=True)
     _tmux("kill-session", "-t", f"={session}")
 
 

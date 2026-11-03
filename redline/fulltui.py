@@ -325,7 +325,7 @@ class EditPaper(ModalScreen):
     BINDINGS = [Binding("escape", "dismiss(None)", "Cancel"), Binding("ctrl+s", "save", "Save")]
     CSS = """
     EditPaper { align: center middle; }
-    #ebox { width: 88; height: auto; max-height: 90%; border: round $accent; background: $surface; padding: 1 2; }
+    #ebox { width: 88; height: auto; max-height: 94%; overflow-y: auto; border: round $accent; background: $surface; padding: 1 2; }
     #ebox Label { margin-top: 1; }
     #ebox Horizontal { height: auto; margin-top: 1; }
     #ebox Button { margin-right: 2; }
@@ -348,6 +348,8 @@ class EditPaper(ModalScreen):
             yield Switch(value=self.cfg.enforce_verification, id="e-verify")
             yield Label("Single-editor document: only you edit it, so it syncs with Overleaf by itself")
             yield Switch(value=self.cfg.single_editor, id="e-single")
+            yield Label("Two tmux sessions: nvim + agent in one, the PDF view alone in a second (for another screen)")
+            yield Switch(value=self.cfg.two_sessions, id="e-two")
             yield Label("Agents may read your other papers (and they may read this one)")
             yield Switch(value=self.cfg.cross_paper_access, id="e-cross")
             yield Label("Code directory (analysis code; relative paths are inside the paper)")
@@ -399,7 +401,7 @@ class EditPaper(ModalScreen):
     def action_save(self) -> None:
         q = self.query_one
         self.dismiss({"category": q("#e-cat", Select).value or "", "enforce_verification": q("#e-verify", Switch).value, "cross_paper_access": q("#e-cross", Switch).value,
-                      "single_editor": q("#e-single", Switch).value,
+                      "single_editor": q("#e-single", Switch).value, "two_sessions": q("#e-two", Switch).value,
                       "code_dir": q("#e-code", Input).value.strip(), "notes": q("#e-notes", Input).value.strip(),
                       "overleaf_project": q("#e-ol", Input).value.strip()})
 
@@ -747,6 +749,10 @@ class Full(App):
             self.fill()  # the Status cell empties
 
     def tick(self) -> None:
+        try:
+            self.query_one("#busy", Static)
+        except Exception:  # shutting down, or the screen is being replaced: nothing to animate
+            return
         self.frame = (self.frame + 1) % len(self.SPIN)
         spin = self.SPIN[self.frame]
         for w in self.query(PagePreview):

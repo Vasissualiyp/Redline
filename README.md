@@ -462,3 +462,13 @@ Every `auto_sync_poll` seconds (default 120) it also looks for edits made on Ove
 the statusline shows an animated "syncing". It never resolves a conflict and never pushes lint or compile errors (it says
 so once); it skips the recompile when a clean build of exactly this text exists, and a lock keeps two syncs from running at
 once. `redline sync auto [--json]` is the same step from the shell (exit 3: needs you, 4: another sync running).
+
+## Two sessions for one paper
+
+`two_sessions = true` (edit screen, `redline full set PAPER two_sessions=true`, or `.redline.toml`) starts two tmux
+sessions: `redline-NAME` with nvim + the agent (and the code window), and `redline-NAME-pdf` with only the PDF view, for a
+second monitor or terminal: `redline open` attaches the first, `redline open --pdf` the second. It is the same preview
+process and socket a pane would have, so everything the editor does to the PDF (following the cursor, highlights,
+recompiles, `e` to jump to the source) works exactly as in one window; the jump selects the editor's window in the other
+session. Quitting closes both, from either side: `\jQ` / `prefix Q` / `redline quit`; the confirmation lists the windows of
+both. Layout presets leave the missing PDF pane out.

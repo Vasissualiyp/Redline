@@ -513,7 +513,10 @@ def _nvim_goto(proj: Project, path: Path, line: int) -> str:
         return f"nvim did not answer: {e}"
     if r.returncode != 0 or r.stdout.strip() not in ("", "ok"):
         return f"nvim: {(r.stdout + r.stderr).strip()[:100]}"
-    here = ["-t", os.environ["TMUX_PANE"]] if os.environ.get("TMUX_PANE") else []
+    from .registry import session_name  # the editor's session: not this pane's, in a two-session paper
+    main = f"={session_name(proj.cfg.root)}"
+    alive = subprocess.run(["tmux", "has-session", "-t", main], capture_output=True).returncode == 0
+    here = ["-t", main] if alive else (["-t", os.environ["TMUX_PANE"]] if os.environ.get("TMUX_PANE") else [])
     out = subprocess.run(["tmux", "list-panes", "-s", *here, "-F", "#{pane_id} #{window_id} #{@redline_role}"],
                          capture_output=True, text=True).stdout
     for ln in out.splitlines():
