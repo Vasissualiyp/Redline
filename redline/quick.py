@@ -70,7 +70,7 @@ def plain(tex: str, n: int = 200) -> str:
 
 def excerpt(d: dict) -> str:
     """Words to look for in the PDF: what the change put there (or took away)."""
-    return plain(d.get("new") or d.get("old") or d.get("comment") or "")
+    return plain(d.get("new") or d.get("old") or d.get("comment") or "", 8000)  # all of it: a cap is where the highlight stops
 
 
 # ---- messages for the agent ------------------------------------------------------

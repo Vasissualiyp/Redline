@@ -291,3 +291,32 @@ def test_preview_holds_the_page_until_you_move_on(tmp_path, monkeypatch):
     assert pane.pdf.read_bytes() == b"%PDF-second"
     pane.handle_key("j")
     assert pane.pdf.read_bytes() == b"%PDF-third"
+
+
+def test_long_blocks_are_highlighted_to_their_end(tmp_path, monkeypatch):
+    from redline import preview
+    from redline.pdfmatch import Rect, Word
+    from redline.state import Project
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    root = tmp_path / "p"
+    root.mkdir()
+    (root / "a.tex").write_text("\\documentclass{article}\n\\begin{document}\nx\n\\end{document}\n")
+    monkeypatch.setenv("REDLINE_ROOT", str(root))
+    pane = preview.Pane(Project.open())
+    pane.pages = 12
+    asked = []
+
+    def boxes(tex, pdf, ln, col=0):
+        asked.append(ln)
+        page = 1 + (ln - 100) // 30                       # a block that runs over several pages
+        return [Rect(page, 50, 100 + 12 * (ln % 30), 500, 110 + 12 * (ln % 30))]
+    monkeypatch.setattr(preview, "synctex_boxes", boxes)
+    monkeypatch.setattr(pane, "_words", lambda pg: [])    # no page text: the line boxes are the fallback
+    pane.goto_line(100, 0, "word " * 5000, 400)           # a 301-line block
+    assert len(asked) <= 24 and asked[0] == 100 and asked[-1] == 400
+    assert max(r.page for r in pane.view.rects) >= 1
+    # every page the block touches is searched for the text (not just three)
+    seen = []
+    monkeypatch.setattr(pane, "_words", lambda pg: seen.append(pg) or [])
+    pane.goto_line(100, 0, "alpha beta gamma delta epsilon zeta " * 30, 400)
+    assert seen == list(range(1, 9))                       # pages 1..8: the block's pages (1-11) capped at eight

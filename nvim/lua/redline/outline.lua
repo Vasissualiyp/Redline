@@ -303,7 +303,7 @@ local function show_node(n, focus)
     vim.api.nvim_win_call(w, function() vim.cmd("normal! zz") end)
     if focus then vim.api.nvim_set_current_win(w) end
   end
-  local text = n.kind == "heading" and n.title or (n.text or ""):sub(1, 1500)
+  local text = n.kind == "heading" and n.title or (n.text or ""):sub(1, 40000) -- the whole block: a cap here is where the PDF highlight would stop
   require("redline.preview").show(S.root, a, true, text, b)
 end
 

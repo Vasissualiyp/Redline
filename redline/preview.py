@@ -385,7 +385,12 @@ class Pane:
         v = self.view
         v.line, v.end, v.text = line, end, text
         boxes = []
-        for ln in range(line, max(line, min(end, line + 25)) + 1):
+        # a long block (a 40-line paragraph, a whole appendix) must be highlighted to its end:
+        # synctex is asked about at most 24 evenly spread lines, the first and the last among them
+        span = list(range(line, max(line, end) + 1))
+        if len(span) > 24:
+            span = sorted({span[round(i * (len(span) - 1) / 23)] for i in range(24)})
+        for ln in span:
             boxes += synctex_boxes(self.tex, self.pdf, ln, col if ln == line else 0)
         if not boxes:
             v.rects, v.shown, v.status = [], (), f"l.{line}: no synctex match (recompile?)"
@@ -395,7 +400,10 @@ class Pane:
         # synctex files a typeset line under the source line it starts in, so a
         # change can begin on the previous page or end on the next one without
         # synctex saying so: search the neighbours too
-        cand = tuple(pg for pg in (main - 1, main, main + 1) if 1 <= pg <= self.pages)
+        # (a block that runs over several pages: every page its lines touch, and the neighbours)
+        touched = sorted({b.page for b in boxes})
+        lo, hi = max(1, touched[0] - 1), min(self.pages, touched[-1] + 1)
+        cand = tuple(range(lo, min(hi, lo + 7) + 1))
         near = [b for b in boxes if b.page in cand]
         rects = []
         if text:

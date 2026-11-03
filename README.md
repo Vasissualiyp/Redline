@@ -548,3 +548,7 @@ agent's sandbox says: `code_dir()` (location, top level, plotting scripts), `cod
 `code_search(query)`. They cannot leave the directory (paths and symlinks are resolved first). A `code_dir` on a network
 mount (cluster scratch over sshfs) that has gone stale would hang forever; Redline answers "does not answer within 6 s" instead
 of freezing, and `redline open` starts the code window in the paper directory. Restart the agent to pick up the new tools.
+
+The PDF highlight of a block covers the whole block however long it is: the overview sends all of its text, the pane asks
+synctex about up to 24 lines spread over it, and a block that runs over several pages is searched on all of them (up to eight);
+the pane shows its first two pages stitched.
