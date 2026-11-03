@@ -486,3 +486,13 @@ or lost. Going to two sessions only creates the second one; attach it yourself w
 When the quit menu offers "Sync to Overleaf first" and you accept, the session closes by itself once everything is on Overleaf
 (already in sync, pushed, or merged and pushed). If the sync stops short (a conflict, a refused or declined push), the
 session stays open and says so.
+
+## The `?` key help
+
+`?` in review mode opens a grouped, colour-coded key list: move (blue), accept/reject (green), marks (yellow), edit
+(orange), agent (magenta), verify (cyan), compile/PDF (red), Overleaf (teal), session (grey); `v` before a key means visual
+mode. It is an ordinary buffer, so `j k <C-d> <C-u> <C-e> <C-y> gg G H M L` scroll it. `/` filters as you type (several
+words are ANDed and match the key, its text or its group; `<CR>` keeps the filter, `<Esc>` clears it), `<Tab>`/`<S-Tab>`
+show one group at a time, `q`, `?` or `<Esc>` close. Colours are the highlight groups `RedlineHelpMove`, `RedlineHelpDecide`,
+`RedlineHelpMark`, `RedlineHelpEdit`, `RedlineHelpAgent`, `RedlineHelpVerify`, `RedlineHelpBuild`, `RedlineHelpSync`,
+`RedlineHelpSession`: override them in your colorscheme.

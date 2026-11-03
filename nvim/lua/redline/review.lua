@@ -553,22 +553,55 @@ local REVIEW_KEYS = {
   { "n", "i", function() M.exit(); vim.cmd("startinsert") end, "leave review mode and insert" },
 }
 
+-- the help's groups: title, colour, and the keys that belong to each (everything else lands in Session)
+local HELP_GROUPS = {
+  { name = "Move", hl = "Move", title = "Move between changes", keys = { "]c", "[c", "]n", "[n", "gl", "K" } },
+  { name = "Decide", hl = "Decide", title = "Accept / reject", keys = { "a", "x", "A", "R", "M", "gA" } },
+  { name = "Mark", hl = "Mark", title = "Mark for later (%Y %N %X)", keys = { "n", "y", "X" } },
+  { name = "Edit", hl = "Edit", title = "Edit the suggestion", keys = { "e", "C" } },
+  { name = "Agent", hl = "Agent", title = "Talk to the agent", keys = { "d", "I", "N", "F", "m" } },
+  { name = "Verify", hl = "Verify", title = "Check claims and references", keys = { "s", "S", "E" } },
+  { name = "Build", hl = "Build", title = "Compile and the PDF", keys = { "c", "T", "p", "f", "W" } },
+  { name = "Sync", hl = "Sync", title = "Overleaf", keys = { "O", "P", "L", "Q" } },
+  { name = "Session", hl = "Session", title = "Session and leaving", keys = { "gS", "gh", "i", "q", "<Esc>", "?" } },
+}
+
 function M.help()
-  local lines = { " Redline review mode", "" }
-  for _, k in ipairs(REVIEW_KEYS) do
-    table.insert(lines, ("  %-2s %-6s %s"):format(k[1] == "x" and "v" or "", k[2], k[4]))
+  local by_group, placed = {}, {}
+  for gi, g in ipairs(HELP_GROUPS) do
+    for _, key in ipairs(g.keys) do
+      by_group[key] = gi
+    end
   end
-  table.insert(lines, "")
-  table.insert(lines, "  u / <C-r> undo/redo as usual; markers: %Y accept, %N keep, %X reject")
-  table.insert(lines, "  % VERIFY <method>: «claim»  ->  % VERIFIED | REFUTED | UNVERIFIED")
-  local b = vim.api.nvim_create_buf(false, true)
-  vim.api.nvim_buf_set_lines(b, 0, -1, false, lines)
-  local w = vim.api.nvim_open_win(b, true, { relative = "editor", row = 2, col = 4, width = 64,
-    height = #lines, border = "rounded", style = "minimal" })
-  vim.keymap.set("n", "q", "<cmd>close<CR>", { buffer = b })
-  vim.keymap.set("n", "<Esc>", "<cmd>close<CR>", { buffer = b })
-  vim.keymap.set("n", "?", "<cmd>close<CR>", { buffer = b })
-  return w
+  local groups = {}
+  for _, g in ipairs(HELP_GROUPS) do
+    table.insert(groups, { name = g.name, hl = g.hl, title = g.title, entries = {} })
+  end
+  for _, k in ipairs(REVIEW_KEYS) do
+    local gi = by_group[k[2]] or #groups
+    table.insert(groups[gi].entries, { key = k[2], mode = k[1], desc = k[4] })
+  end
+  local order = {}
+  for _, g in ipairs(HELP_GROUPS) do
+    local idx = {}
+    for i, key in ipairs(g.keys) do idx[key] = i end
+    table.insert(order, idx)
+  end
+  for gi, g in ipairs(groups) do  -- the order inside a group is the one written above
+    table.sort(g.entries, function(a, b)
+      local ia, ib = order[gi][a.key] or 99, order[gi][b.key] or 99
+      if ia ~= ib then return ia < ib end
+      return a.mode < b.mode
+    end)
+  end
+  require("redline.help").open({
+    groups = groups,
+    notes = {
+      "u / <C-r> undo / redo as usual.  Markers in the text: %Y accept, %N keep (+ note), %X reject.",
+      "% VERIFY <method>: «claim»  ->  % VERIFIED | REFUTED | UNVERIFIED  (s asks, E shows the evidence).",
+      "v before a key: visual mode.  Outside review mode the same actions live under " .. (core.config.prefix or "<leader>j") .. ".",
+    },
+  })
 end
 
 local saved = {} -- buf -> {maps, wo}
