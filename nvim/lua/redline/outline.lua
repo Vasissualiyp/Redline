@@ -53,6 +53,7 @@ local function define_highlights()
   hl("RedlineOutlineFlag", { fg = "#e06c75", italic = true })
   hl("RedlineOutlineHeader", { fg = "#abb2bf", bold = true, underline = true })
   hl("RedlineOutlineBlock", { bg = "#3e4451" })
+  hl("RedlineOutlineHere", { bg = "#2c313c", bold = true }) -- the block the paper's cursor is in
 end
 
 -- ---- data --------------------------------------------------------------------------
@@ -310,6 +311,46 @@ local function follow()
   end))
 end
 
+-- ---- the other direction: the overview follows the paper's cursor ---------------------------
+local ns_here = vim.api.nvim_create_namespace("redline_outline_here")
+
+--- The node a paper line belongs to: the smallest block containing it, else the nearest one above.
+local function node_at_line(line)
+  local best, best_span, above, above_start = nil, math.huge, nil, -1
+  for _, n in ipairs(S.data and S.data.nodes or {}) do
+    local a, b = n.lines[1], n.lines[2]
+    if a <= line and line <= b and (b - a) < best_span then best, best_span = n, b - a end
+    if a <= line and a > above_start then above, above_start = n, a end
+  end
+  return best or above
+end
+
+local function sync_from_paper()
+  if not (M.is_open() and S.paper and vim.api.nvim_buf_is_valid(S.paper)) then return end
+  if vim.api.nvim_get_current_win() == S.win or vim.api.nvim_get_current_buf() ~= S.paper then return end
+  local line = vim.api.nvim_win_get_cursor(0)[1]
+  local node = node_at_line(line)
+  if not node then return end
+  -- inside a folded section: the nearest visible ancestor stands for it (the fold is the user's choice)
+  local nodes_ = S.data.nodes
+  local target = node
+  while target and not (function()
+    for _, v in pairs(S.lines) do if v.n.hash == target.hash then return true end end
+  end)() do
+    target = target.parent and target.parent >= 0 and nodes_[target.parent + 1] or nil
+  end
+  if not target then return end
+  for row, v in pairs(S.lines) do
+    if v.n.hash == target.hash then
+      vim.api.nvim_buf_clear_namespace(S.buf, ns_here, 0, -1)
+      vim.api.nvim_buf_set_extmark(S.buf, ns_here, row, 0, { line_hl_group = "RedlineOutlineHere" })
+      pcall(vim.api.nvim_win_set_cursor, S.win, { row + 1, 0 })
+      vim.api.nvim_win_call(S.win, function() vim.cmd("normal! zz") end)
+      return
+    end
+  end
+end
+
 -- ---- loading ---------------------------------------------------------------------
 local function fetch(cb)
   run("overview --json", nil, function(r)
@@ -321,6 +362,7 @@ local function fetch(cb)
     if S.plan then reconcile_plan() end
     redraw_keep()
     if cb then cb() end
+    vim.defer_fn(sync_from_paper, 20)
   end)
 end
 
@@ -705,6 +747,13 @@ function M.open(mode)
   end)
   -- the paper changed: reload (debounced) so staleness shows up while you write
   S.au = S.au or vim.api.nvim_create_augroup("RedlineOutline", { clear = true })
+  vim.api.nvim_clear_autocmds({ group = S.au, buffer = S.paper })
+  -- the overview moves with the paper: the block under the paper's cursor is shown and highlighted
+  vim.api.nvim_create_autocmd("CursorMoved", { group = S.au, buffer = S.paper, callback = function()
+    S.paper_timer = S.paper_timer or vim.uv.new_timer()
+    S.paper_timer:stop()
+    S.paper_timer:start(80, 0, vim.schedule_wrap(sync_from_paper))
+  end })
   vim.api.nvim_create_autocmd({ "BufWritePost", "TextChanged" }, { group = S.au, buffer = S.paper, callback = function()
     if not M.is_open() then return end
     S.timer = S.timer or vim.uv.new_timer()

@@ -512,8 +512,9 @@ and the confirmation says how many were skipped.
 
 `gO` in review mode (`:Redline overview [tab]`) opens the paper as a tree of one-line **thoughts**: sections, then one
 node per paragraph (¶), figure (▣), table (▦), list (≡) with its items (•), equation (∑) and the abstract (A). Headings show their number as typeset (`3.4.1  Title`). Each row has fixed columns first, **l w c** (lines, words, chars, right-aligned so sizes line up; a section shows its totals), then the thought. It sits in a sidebar by default; `s`
-toggles a full tab. Moving the cursor scrolls the paper to the block, highlights it there and **highlights the whole block
-in the PDF pane**.
+toggles a full tab. Moving the cursor in the overview scrolls the paper to the block, highlights it there and **highlights the whole block
+in the PDF pane**; and the other way round, moving through the paper moves the overview to the block your cursor is in
+(the nearest block above on a blank line, the section heading when the block is folded away) and highlights its row.
 
 - **Hashes:** every block is hashed from its *accepted* text (pending `\added/\deleted/\replaced` resolved, comments, review
   markers and `% VERIFIED` lines ignored). Edit a paragraph and its thought turns stale: still shown, dimmed and marked `~`
