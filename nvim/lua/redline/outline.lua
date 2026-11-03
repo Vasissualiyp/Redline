@@ -178,7 +178,7 @@ end
 local function pre() return S.hide_counts and 0 or PRE end -- bytes of the l/w/c columns right now
 local function pre_width() return S.hide_counts and 0 or PRE - 2 end -- screen columns ("│" is 1 wide, 3 bytes)
 
-local MARK = #"‹0123456789›" -- the hidden id at the start of every node line (concealed)
+
 
 local function render()
   if not (S.buf and vim.api.nvim_buf_is_valid(S.buf)) then return end
@@ -215,14 +215,17 @@ local function render()
     end
     local tag = (n.stale and "~" or "") .. (S.plan and moved[n.hash] and "⇅" or "") .. (S.marks[n.hash] and "◆" or "")
     local id = "‹" .. n.hash .. "›"
-    local line = id .. columns(n) .. ("%s%s%s%s %s"):format(pad, fold, ICON[n.kind] or "?", tag ~= "" and tag or "", text)
+    -- the id goes LAST: concealed text still counts when nvim wraps, and 16 hidden columns at the
+    -- start of every line made all of them wrap that much too early
+    local body = columns(n) .. ("%s%s%s%s %s"):format(pad, fold, ICON[n.kind] or "?", tag ~= "" and tag or "", text)
+    local line = body .. id
     table.insert(lines, line)
     local row = #lines - 1
     S.lines[row] = v
-    table.insert(marks, { row, 0, #id, nil, { conceal = true } })
-    table.insert(marks, { row, #id, #id + pre(), "RedlineOutlineCounts" })
-    local icon_from = #id + pre() + #pad + #fold
-    table.insert(marks, { row, icon_from, #line, group })
+    table.insert(marks, { row, #body, #line, nil, { conceal = true } })
+    table.insert(marks, { row, 0, pre(), "RedlineOutlineCounts" })
+    local icon_from = pre() + #pad + #fold
+    table.insert(marks, { row, icon_from, #body, group })
     if (S.plan and moved[n.hash]) or S.marks[n.hash] then
       table.insert(marks, { row, icon_from, icon_from + #ICON[n.kind] + #tag, S.marks[n.hash] and "RedlineOutlineMark" or "RedlineOutlineMoved" })
     end
@@ -623,7 +626,7 @@ local function help()
         { key = "g> g< g|", mode = "n", desc = "wider / narrower sidebar / toggle a wide one (also <C-w>< <C-w>> or the mouse)" },
         { key = "q", mode = "n", desc = "close (asks if the lines were edited but not committed)" } } },
     },
-    notes = { "~ stale thought   ∅ no thought yet   ⇅ moved in the plan   ◆ marked.  The first 12 characters of every line are a hidden id: do not edit them." },
+    notes = { "~ stale thought   ∅ no thought yet   ⇅ moved in the plan   ◆ marked.  The end of every line holds a hidden id (‹...›): do not edit it." },
   })
 end
 
