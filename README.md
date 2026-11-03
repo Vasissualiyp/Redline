@@ -574,3 +574,8 @@ the pane shows its first two pages stitched.
 **Undo in the overview** (`u`, `<C-r>`) works in layers: edits you have not committed yet (the buffer's own undo), then
 each plan commit (`:w`), `ga` and `gd`-reset step, and finally a plan you applied directly to the paper (it asks, then reverts that
 one write, like `redline undo`). A reload or commit is never an undo step of its own.
+
+**Recommendations for a part:** select rows in the overview with `V` (a section line brings all its content) and press `gv`:
+the cheap model reviews only those blocks, with the whole sequence as context (the selected ones are marked `<< IN SCOPE`
+in what it reads), and recommends moves and merges that involve them. It replaces only the recommendations about the selected
+blocks; the others stay. `redline overview review --hashes h1,h2` does the same from a shell.

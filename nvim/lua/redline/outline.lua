@@ -610,14 +610,15 @@ local function edit_task(op)
   end)
 end
 
-local function model_task(action, model, everything, hashes)
+local function model_task(action, model, everything, hashes, scope)
   if S.busy then return vim.notify("redline overview: busy (" .. S.busy .. ")") end
   local label = (action == "flow" and "checking the flow") or (action == "review" and "reviewing the structure")
     or "writing thoughts"
   busy("⠿ " .. label)
   local stop = require("redline.spinner").start(label)
   run("overview " .. action .. (model and (" --model " .. model) or "") .. (everything and " --all" or "")
-    .. (hashes and (" --hashes " .. table.concat(hashes, ",") .. " --no-review") or ""), nil, function(r)
+    .. (hashes and (" --hashes " .. table.concat(hashes, ",") .. " --no-review") or "")
+    .. (scope and (" --hashes " .. table.concat(scope, ",")) or ""), nil, function(r)
     stop()
     busy(nil)
     local out = ((r.stdout or "") .. (r.stderr or "")):gsub("%s+$", "")
@@ -797,6 +798,34 @@ local function reclassify_all()
   }, function() model_task("refresh", nil, true) end)
 end
 
+--- Ask for recommendations about the part selected in visual mode (whole sections come with their content).
+local function review_selection()
+  local a, b = vim.fn.line("v"), vim.fn.line(".")
+  if a > b then a, b = b, a end
+  vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "nx", false)
+  local list, want = nodes(), {}
+  local at = {}
+  for i, n in ipairs(list) do at[n.hash] = i end
+  for row = a - 1, b - 1 do
+    local v = S.lines[row]
+    if v then
+      want[v.n.hash] = true
+      if v.n.kind == "heading" or v.n.kind == "list" then -- a section / list brings its content along
+        for j = v.i + 1, #list do
+          if list[j].depth <= v.n.depth then break end
+          want[list[j].hash] = true
+        end
+      end
+    end
+  end
+  local hashes = {}
+  for _, n in ipairs(S.data.nodes) do -- paper order, blocks only
+    if want[n.hash] and n.kind ~= "heading" then table.insert(hashes, n.hash) end
+  end
+  if #hashes == 0 then return vim.notify("redline overview: select blocks (V on the rows)") end
+  model_task("review", nil, false, nil, hashes)
+end
+
 local function rerun_block()
   local v = cur_vis()
   if not v or v.n.kind == "heading" then return vim.notify("redline overview: put the cursor on a block") end
@@ -851,6 +880,7 @@ local function help()
         { key = "]s [s", mode = "n", desc = "next / previous ✂ split recommendation (long block, separate substantial ideas)" } } },
       { name = "Verify", hl = "Verify", title = "Recommendations from the model (split ✂, move / merge ⇢)", entries = {
         { key = "gv", mode = "n", desc = "review the whole sequence of thoughts: recommend moves and merges (also runs after the thoughts)" },
+        { key = "gv", mode = "x", desc = "in visual mode: recommendations only for the SELECTED part (a section brings its content), the rest is context" },
         { key = "ga", mode = "n", desc = "accept the recommendation here: a move goes into the draft plan, a merge marks the blocks" },
         { key = "gd", mode = "n", desc = "dismiss them: they stay away until the block is re-run (gR)" },
         { key = "gR", mode = "n", desc = "run this block through the model again (new thought, new recommendation)" },
@@ -931,6 +961,8 @@ local function setup_buffer()
   map("gC", reclassify_all, "force a full reclassification")
   map("gF", function() model_task("flow") end, "flow check")
   map("gv", function() model_task("review") end, "review the structure: moves and merges")
+  vim.keymap.set("x", "gv", review_selection, { buffer = S.buf, nowait = true, silent = true,
+    desc = "redline overview: recommendations for the selected part" })
   map("gR", rerun_block, "run this block through the model again")
   map("gd", dismiss_here, "dismiss the recommendations here")
   map("ga", accept_suggestion, "accept the recommended move / merge")

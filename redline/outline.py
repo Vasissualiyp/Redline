@@ -266,7 +266,8 @@ def load_store(proj: Project) -> dict:
         data = json.loads(_path(proj).read_text())
     except (OSError, ValueError):
         data = {}
-    for k, v in (("thoughts", {}), ("last", []), ("flags", []), ("plan", None), ("suggestions", [])):
+    for k, v in (("thoughts", {}), ("last", []), ("flags", []), ("plan", None), ("suggestions", []),
+                 ("review_scope", None)):
         data.setdefault(k, v)
     return data
 
@@ -472,8 +473,10 @@ def record(proj: Project, items: list[dict], model: str = "") -> str:
 
 
 def overview(proj: Project) -> str:
-    """The sequence of thoughts, for a flow check (not the full text)."""
+    """The sequence of thoughts, for a flow check (not the full text). During a scoped review the
+    blocks the human selected are marked "<< IN SCOPE"."""
     o = build(proj)
+    scope = set(load_store(proj).get("review_scope") or [])
     out = []
     for n in o["nodes"]:
         pad = "  " * n["depth"]
@@ -482,7 +485,8 @@ def overview(proj: Project) -> str:
         else:
             t = n["thought"] or "(no thought yet)"
             out.append(f"{pad}- {n['hash']} [{n['kind']}, {n['words']}w] {t}" + (" (stale)" if n["stale"] else "")
-                       + (f" (split recommended: {' | '.join(n['split'])})" if n.get("split") else ""))
+                       + (f" (split recommended: {' | '.join(n['split'])})" if n.get("split") else "")
+                       + (" << IN SCOPE" if n["hash"] in scope else ""))
     return "\n".join(out)
 
 
@@ -662,7 +666,10 @@ def record_suggestions(proj: Project, items: list[dict]) -> str:
     o = build(proj)
     known = {n["hash"]: n for n in o["nodes"]}
     store = load_store(proj)
-    keep = [x for x in store["suggestions"] if x.get("source") != "agent"]
+    scope = set(store.get("review_scope") or [])
+    # a scoped review replaces only the recommendations about its own blocks
+    keep = [x for x in store["suggestions"]
+            if x.get("source") != "agent" or (scope and x["hashes"][0] not in scope)]
     n, bad = 0, []
     for it in items:
         op = it.get("op")
@@ -685,6 +692,9 @@ def record_suggestions(proj: Project, items: list[dict]) -> str:
         else:
             bad.append(str(op))
             continue
+        if scope and not (set(entry["hashes"]) & scope or entry.get("after") in scope):
+            bad.append("outside the selection: " + entry["hashes"][0])
+            continue
         keep.append({**entry, "note": note, "source": "agent", "at": time.strftime("%Y-%m-%dT%H:%M:%S")})
         n += 1
     store["suggestions"] = keep
@@ -692,7 +702,23 @@ def record_suggestions(proj: Project, items: list[dict]) -> str:
     return f"recorded {n} suggestion(s)" + (f"; invalid ignored: {', '.join(bad)}" if bad else "")
 
 
-def review_task(proj: Project) -> str:
+def set_review_scope(proj: Project, hashes: list[str] | None) -> None:
+    store = load_store(proj)
+    store["review_scope"] = hashes or None
+    save_store(proj, store)
+
+
+def review_task(proj: Project, scope: list[str] | None = None) -> str:
+    if scope:
+        return ("You are reviewing PART of a paper's structure from its thoughts. Call outline_overview(): the whole "
+                "sequence of one-line thoughts with hashes, word counts and any '(split recommended: ...)' notes; the "
+                f"{len(scope)} block(s) marked '<< IN SCOPE' are the ones the human asked about. Recommend only changes "
+                "that involve an in-scope block and clearly improve the argument: MOVE it (op 'move', hash, after = the "
+                "hash it should follow, or null for the very start; note = why, 12 words or fewer), or MERGE it with "
+                "others (op 'merge', hashes in paper order, note). Use the rest of the sequence as context (what comes "
+                "before and after, where else the same thing is said). Blocks marked 'split recommended' are not to be "
+                "merged. Be selective; an empty list is a fine answer. Call record_suggestions once with [{op, ...}]. "
+                "Do not edit the paper.")
     return ("You are reviewing the structure of a paper from its thoughts. Call outline_overview(): the sequence of one-line "
             "thoughts with hashes, word counts, and any '(split recommended: ...)' notes. Recommend only changes that "
             "clearly improve the argument:\n"

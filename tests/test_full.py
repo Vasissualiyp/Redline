@@ -1115,3 +1115,27 @@ def test_a_hung_code_dir_mount_is_never_touched_by_setup(home, monkeypatch):
     assert sync.ensure_ignores(d) is not None
     assert config.load(d).code_dir == hung
     assert not touched, touched
+
+
+def test_scoped_review_only_touches_the_selection(home):
+    from redline import outline
+    from redline.state import Project
+    d = make_paper(home)
+    (d / "main.tex").write_text(PLAN_TEX)
+    proj = Project.open(d)
+    h = [n["hash"] for n in outline.build(proj)["nodes"] if n["kind"] == "paragraph"]
+    outline.record(proj, [{"hash": x, "thought": f"t{i}"} for i, x in enumerate(h)])
+    outline.record_suggestions(proj, [{"op": "move", "hash": h[0], "after": h[3], "note": "old rec on A"},
+                                      {"op": "move", "hash": h[1], "after": None, "note": "old rec on B"}])
+    # the human selects C and D: the model sees them marked, and only recommendations about them are accepted
+    outline.set_review_scope(proj, [h[2], h[3]])
+    assert outline.overview(proj).count("<< IN SCOPE") == 2
+    task = outline.review_task(proj, [h[2], h[3]])
+    assert "PART of a paper" in task and "2 block(s)" in task
+    msg = outline.record_suggestions(proj, [{"op": "move", "hash": h[2], "after": h[0], "note": "new on C"},
+                                            {"op": "move", "hash": h[1], "after": h[0], "note": "outside the selection"}])
+    assert msg.startswith("recorded 1 suggestion(s)") and "outside the selection" in msg
+    outline.set_review_scope(proj, None)
+    notes = sorted(x["note"] for n in outline.build(proj)["nodes"] for x in n["suggestions"])
+    assert notes == ["new on C", "old rec on A", "old rec on B"]          # the earlier ones about A and B stay
+    assert "IN SCOPE" not in outline.overview(proj)

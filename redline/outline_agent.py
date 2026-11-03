@@ -76,12 +76,19 @@ def refresh(proj: Project, model: str | None = None, stream=None, everything: bo
     return msg
 
 
-def suggest(proj: Project, model: str | None = None, stream=None) -> str:
-    """All the thoughts together (splits included): the model recommends rearrangements and merges."""
+def suggest(proj: Project, model: str | None = None, stream=None, scope: list[str] | None = None) -> str:
+    """All the thoughts together (splits included): the model recommends rearrangements and merges.
+    scope: only about these blocks (the part the human selected), the rest is context."""
     o = outline.build(proj)
     if o["missing"] or o["stale"]:
         raise RedlineError(f"{o['missing'] + o['stale']} block(s) have no up-to-date thought: refresh the thoughts first")
-    res = run(proj, outline.review_task(proj), model, stream)
+    known = {n["hash"] for n in o["nodes"]}
+    scope = [h for h in (scope or []) if h in known]
+    outline.set_review_scope(proj, scope or None)
+    try:
+        res = run(proj, outline.review_task(proj, scope or None), model, stream)
+    finally:
+        outline.set_review_scope(proj, None)
     after = outline.build(proj)
     return f"{res}; {after['suggestions']} recommendation(s), {after['splits']} split(s)"
 

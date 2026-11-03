@@ -379,7 +379,7 @@ def _run(a: argparse.Namespace) -> int:
                 print(OA.refresh(proj, a.model, everything=a.all, hashes=hashes or None,
                                  review=False if a.no_review else None))
             elif a.action == "review":
-                print(OA.suggest(proj, a.model))
+                print(OA.suggest(proj, a.model, scope=[h for h in (a.hashes or "").split(",") if h] or None))
             else:
                 print(OA.flow(proj, a.model))
         return 0
