@@ -18,7 +18,7 @@ local rpc = require("redline.rpc")
 local M = {}
 local S = {
   buf = nil, win = nil, mode = "side", root = nil, paper = nil, data = nil, plan = nil,
-  collapsed = {}, marks = {}, deleted = {}, width = nil, wide = false, lines = {}, busy = nil, timer = nil, follow_timer = nil,
+  collapsed = {}, marks = {}, deleted = {}, width = nil, wide = false, hide_counts = nil, lines = {}, busy = nil, timer = nil, follow_timer = nil,
 }
 M._state = S -- for tests
 local ns = vim.api.nvim_create_namespace("redline_outline")
@@ -172,8 +172,11 @@ local function fmt(n) return tostring(n):reverse():gsub("(%d%d%d)", "%1,"):rever
 local PRE_FMT = "%4s %5s %7s │ "
 local PRE = #(PRE_FMT:format("", "", "")) -- bytes; "│" is 3 bytes
 local function columns(n)
+  if S.hide_counts then return "" end
   return PRE_FMT:format(fmt(n.nlines or 0), fmt(n.words or 0), fmt(n.chars or 0))
 end
+local function pre() return S.hide_counts and 0 or PRE end -- bytes of the l/w/c columns right now
+local function pre_width() return S.hide_counts and 0 or PRE - 2 end -- screen columns ("│" is 1 wide, 3 bytes)
 
 local MARK = #"‹0123456789›" -- the hidden id at the start of every node line (concealed)
 
@@ -193,7 +196,7 @@ local function render()
   if S.plan then head = head .. ("  · PLAN: %d moved, %d deleted (gA applies, gr discards)"):format(nmoved, ndel) end
   if S.busy then head = head .. "  · " .. S.busy end
   table.insert(lines, head)
-  table.insert(lines, PRE_FMT:format("l", "w", "c") .. "? keys · dd p move · dd delete · :w commit · gA apply plan")
+  table.insert(lines, (S.hide_counts and "" or PRE_FMT:format("l", "w", "c")) .. "? keys · dd p move · dd delete · :w commit · gA apply plan · gc l/w/c")
   for _, v in ipairs(vis) do
     local n = v.n
     local pad = ("  "):rep(math.max(n.depth, 0))
@@ -217,15 +220,15 @@ local function render()
     local row = #lines - 1
     S.lines[row] = v
     table.insert(marks, { row, 0, #id, nil, { conceal = true } })
-    table.insert(marks, { row, #id, #id + PRE, "RedlineOutlineCounts" })
-    local icon_from = #id + PRE + #pad + #fold
+    table.insert(marks, { row, #id, #id + pre(), "RedlineOutlineCounts" })
+    local icon_from = #id + pre() + #pad + #fold
     table.insert(marks, { row, icon_from, #line, group })
     if (S.plan and moved[n.hash]) or S.marks[n.hash] then
       table.insert(marks, { row, icon_from, icon_from + #ICON[n.kind] + #tag, S.marks[n.hash] and "RedlineOutlineMark" or "RedlineOutlineMoved" })
     end
     for _, f in ipairs(n.flags or {}) do
       local label = FLAG_ICON[f.kind == "repeat" and "repeat_" or f.kind] or "⚑"
-      table.insert(marks, { row, -1, -1, nil, { virt = (" "):rep(PRE - 2) .. ("%s    %s: %s"):format(pad, label, f.note) } })
+      table.insert(marks, { row, -1, -1, nil, { virt = (" "):rep(pre_width()) .. ("%s    %s: %s"):format(pad, label, f.note) } })
     end
   end
   S.rendering = true
@@ -235,7 +238,9 @@ local function render()
   vim.api.nvim_buf_clear_namespace(S.buf, ns, 0, -1)
   vim.api.nvim_buf_set_extmark(S.buf, ns, 0, 0, { end_col = #lines[1], hl_group = "RedlineOutlineHeader" })
   vim.api.nvim_buf_set_extmark(S.buf, ns, 1, 0, { end_col = #lines[2], hl_group = "RedlineOutlineCounts" })
-  vim.api.nvim_buf_set_extmark(S.buf, ns, 1, 0, { end_col = PRE, hl_group = "RedlineOutlineHeader" })
+  if pre() > 0 then
+    vim.api.nvim_buf_set_extmark(S.buf, ns, 1, 0, { end_col = pre(), hl_group = "RedlineOutlineHeader" })
+  end
   local virt = {}
   for _, m in ipairs(marks) do
     local extra = m[5]
@@ -613,6 +618,7 @@ local function help()
         { key = "gW", mode = "n", desc = "rewrite EVERY thought (e.g. after changing outline_words)" },
         { key = "gF", mode = "n", desc = "flow check: the model flags gaps, repeats, forward references ..." } } },
       { name = "Session", hl = "Session", title = "Window", entries = {
+        { key = "gc", mode = "n", desc = "show / hide the l w c (lines, words, chars) columns" },
         { key = "gw", mode = "n", desc = "sidebar <-> full tab" },
         { key = "g> g< g|", mode = "n", desc = "wider / narrower sidebar / toggle a wide one (also <C-w>< <C-w>> or the mouse)" },
         { key = "q", mode = "n", desc = "close (asks if the lines were edited but not committed)" } } },
@@ -678,6 +684,11 @@ local function setup_buffer()
   map("gF", function() model_task("flow") end, "flow check")
   map("]f", function() next_flag(1) end, "next flag")
   map("[f", function() next_flag(-1) end, "previous flag")
+  map("gc", function()
+    S.hide_counts = not S.hide_counts or nil
+    M.set_showbreak()
+    redraw_keep()
+  end, "show / hide the l w c columns")
   map("gw", function() M.toggle_mode() end, "sidebar <-> tab")
   map("g>", function() resize(6) end, "wider")
   map("g<", function() resize(-6) end, "narrower")
@@ -713,7 +724,13 @@ local function open_window()
     cursorline = true, signcolumn = "no", foldcolumn = "0", winfixwidth = S.mode == "side", list = false }) do
     vim.wo[S.win][k] = v
   end
-  vim.wo[S.win].showbreak = (" "):rep(PRE - 4) .. "│ " -- wrapped thoughts stay under the thought column
+  M.set_showbreak()
+end
+
+function M.set_showbreak()
+  if M.is_open() then -- wrapped thoughts stay under the thought column
+    vim.wo[S.win].showbreak = S.hide_counts and "" or ((" "):rep(PRE - 4) .. "│ ")
+  end
 end
 
 function M.is_open() return S.win ~= nil and vim.api.nvim_win_is_valid(S.win) end
