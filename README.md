@@ -496,3 +496,11 @@ words are ANDed and match the key, its text or its group; `<CR>` keeps the filte
 show one group at a time, `q`, `?` or `<Esc>` close. Colours are the highlight groups `RedlineHelpMove`, `RedlineHelpDecide`,
 `RedlineHelpMark`, `RedlineHelpEdit`, `RedlineHelpAgent`, `RedlineHelpVerify`, `RedlineHelpBuild`, `RedlineHelpSync`,
 `RedlineHelpSession`: override them in your colorscheme.
+
+## Recompiles do not move the page you are reading
+
+The PDF is rebuilt in the background as the paper changes, but the page on screen stays exactly as it is until you move on:
+the cursor reaches another change (nvim sends a new place), you page (`j k space b g G`), zoom, or redraw (`r`). The status
+line says "newer build ready: shown when you move on". The pane keeps its own copy of the build it shows (with its synctex
+file), so a resize redraws the same build. The quick menu in `redline full` works the same way: a finished compile refreshes
+the page only when you go to another change (or when the preview was showing a note such as "out of date").

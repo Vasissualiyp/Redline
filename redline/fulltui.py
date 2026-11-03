@@ -1120,7 +1120,14 @@ class Full(App):
         finally:
             self.compiling = False
             self.busy(key, None)
-        self.call_from_thread(self.show_change)
+        self.call_from_thread(self.after_compile)
+
+    def after_compile(self) -> None:
+        """A rebuild must not redraw the page being read: it appears when you move to another change.
+        Only a preview that shows a note instead of a page (no PDF yet, out of date) is refreshed."""
+        page = self.query_one("#cpage", PagePreview)
+        if self.text_view or page.placed is None:
+            self.show_change()
 
     # ---- deciding ----------------------------------------------------------------
     def _decide(self, verb: str, fn) -> None:

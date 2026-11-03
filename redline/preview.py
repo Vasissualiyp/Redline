@@ -449,10 +449,16 @@ class Pane:
         if "line" in msg:
             if not self.view.follow and not msg.get("force"):
                 return False
+            same = (int(msg["line"]), str(msg.get("text") or ""), int(msg.get("end") or 0)) == \
+                (self.view.line, self.view.text, self.view.end)
+            if same and not msg.get("force"):
+                return False  # the cursor is still on what is shown: nothing moves
+            self.release()    # a new place: now the rebuilt PDF may appear
             self.goto_line(int(msg["line"]), int(msg.get("col", 0)), str(msg.get("text") or ""),
                            int(msg.get("end") or 0))
             return True
         if "page" in msg:
+            self.release()
             self.view.page = int(msg["page"])
             self.view.rects, self.view.shown = [], ()
             return True
@@ -460,6 +466,9 @@ class Pane:
 
     def handle_key(self, k: str) -> bool:
         v = self.view
+        if k in ("j", " ", "\x1b[B", "l", "k", "b", "\x1b[A", "h", "g", "G", "+", "=", "-", "0", "w", "z", "r"):
+            if self.release():  # moving on, zooming or redrawing: show the newest build
+                v.rects, v.shown = [], ()  # its highlight positions are unknown until nvim sends the line again
         if k in ("j", " ", "\x1b[B", "l", "k", "b", "\x1b[A", "h", "g", "G") and v.shown:
             v.page = v.shown[0]
             v.shown = ()  # paging: one page at a time again
@@ -493,7 +502,51 @@ class Pane:
             return False
         return True
 
+    # ---- holding the page you are reading ------------------------------------------
+    def enable_hold(self) -> None:
+        """A rebuilt PDF does not replace what is on screen until you move on (the next change,
+        another page, a zoom): reading is not interrupted by a recompile. The shown build is a
+        private copy (with its synctex file), so redraws (resize...) stay consistent with it."""
+        self.live = self.pdf
+        self.pdf = self.tmp / "shown.pdf"
+        self.hold = True
+        self.live_mtime = 0.0
+        self.newer = False   # a newer build is waiting
+
+    def _snapshot(self) -> None:
+        for suffix in (".synctex.gz", ".pdf"):  # the PDF last: it is what check_pdf looks at
+            src = self.live.with_suffix(suffix)
+            if src.exists():
+                tmp = self.tmp / (".tmp-shown" + suffix)
+                shutil.copy2(src, tmp)
+                os.replace(tmp, self.tmp / ("shown" + suffix))
+        self.live_mtime = self.live.stat().st_mtime
+        self.newer = False
+
+    def release(self) -> bool:
+        """Show the waiting build (the reader moved on). True if the PDF changed."""
+        if getattr(self, "hold", False) and self.newer:
+            try:
+                self._snapshot()
+            except OSError:
+                return False
+            return self.check_pdf()
+        return False
+
     def check_pdf(self) -> bool:
+        if getattr(self, "hold", False):
+            try:
+                live = self.live.stat().st_mtime
+            except OSError:
+                return False
+            if live != self.live_mtime:
+                if not self.pdf.exists():  # the first build: nothing is being read yet
+                    self._snapshot()
+                else:
+                    if not self.newer:
+                        self.newer = True
+                        self._status(f"{self._where()}  newer build ready: shown when you move on")
+                    return False
         try:
             m = self.pdf.stat().st_mtime
         except OSError:
@@ -503,6 +556,11 @@ class Pane:
             self.pages, self.page_w, self.page_h = pdf_info(self.pdf)
             return True
         return False
+
+    def _where(self) -> str:
+        v = self.view
+        pages = v.shown if len(v.shown) == 2 else (v.page,)
+        return f"p.{pages[0]}–{pages[1]}" if len(pages) == 2 else f"p.{v.page}"
 
 
 def _nvim_goto(proj: Project, path: Path, line: int) -> str:
@@ -547,6 +605,7 @@ def main(proj: Project) -> int:
     if not _compile.view_pdf(proj).exists():
         _compile.publish(proj)  # a build from before the view copy existed
     pane = Pane(proj)
+    pane.enable_hold()
     from .config import socket_path
     sock_path = socket_path(proj.cfg.root, "preview")
     sock_path.unlink(missing_ok=True)

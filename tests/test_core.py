@@ -249,3 +249,45 @@ def test_write_default_config_parses(tmp_path):
     (tmp_path / "a.tex").write_text("\\documentclass{article}\n\\begin{document}\n\\end{document}\n")
     path = config.write_default(tmp_path, "code")
     assert tomllib.loads(path.read_text())["evidence_collection"] == "Redline evidence/{paper}"
+
+
+def test_preview_holds_the_page_until_you_move_on(tmp_path, monkeypatch):
+    import os
+    from redline import compile as C, preview
+    from redline.state import Project
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    root = tmp_path / "p"
+    root.mkdir()
+    (root / "a.tex").write_text("\\documentclass{article}\n\\begin{document}\nx\n\\end{document}\n")
+    monkeypatch.setenv("REDLINE_ROOT", str(root))
+    proj = Project.open()
+    view = C.view_pdf(proj)
+    view.parent.mkdir(parents=True, exist_ok=True)
+    view.write_bytes(b"%PDF-first")
+    monkeypatch.setattr(preview, "pdf_info", lambda pdf: (3, 612.0, 792.0))
+    pane = preview.Pane(proj)
+    pane.enable_hold()
+    assert pane.check_pdf()                                   # the first build is shown at once
+    assert pane.pdf.read_bytes() == b"%PDF-first"
+    # a recompile lands while reading: nothing changes on screen
+    view.write_bytes(b"%PDF-second")
+    os.utime(view, (pane.live_mtime + 5, pane.live_mtime + 5))
+    status = []
+    monkeypatch.setattr(pane, "_status", lambda t: status.append(t))
+    assert pane.check_pdf() is False and pane.newer and "newer build" in status[0]
+    assert pane.pdf.read_bytes() == b"%PDF-first"
+    # the cursor is still on what is shown: still held
+    pane.view.line, pane.view.text, pane.view.end = 3, "x", 3
+    monkeypatch.setattr(pane, "goto_line", lambda *a, **k: None)
+    assert pane.handle_msg({"line": 3, "text": "x", "end": 3}) is False
+    assert pane.pdf.read_bytes() == b"%PDF-first"
+    # moving to another change shows the new build
+    assert pane.handle_msg({"line": 9, "text": "y", "end": 9}) is True
+    assert pane.pdf.read_bytes() == b"%PDF-second" and not pane.newer
+    # paging does too
+    view.write_bytes(b"%PDF-third")
+    os.utime(view, (pane.live_mtime + 10, pane.live_mtime + 10))
+    pane.check_pdf()
+    assert pane.pdf.read_bytes() == b"%PDF-second"
+    pane.handle_key("j")
+    assert pane.pdf.read_bytes() == b"%PDF-third"
