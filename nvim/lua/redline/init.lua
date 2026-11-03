@@ -343,6 +343,11 @@ function M.start(opts)
   end
   M.attach(vim.api.nvim_get_current_buf())
   vim.api.nvim_create_autocmd("VimLeavePre", { callback = rpc.stop_all })
+  -- the overview window as you left it (side / tab, width), for this session mode
+  vim.defer_fn(function()
+    local ok, err = pcall(function() require("redline.outline").restore() end)
+    if not ok then vim.notify("redline: overview not restored: " .. tostring(err), vim.log.levels.DEBUG) end
+  end, 600)
 end
 
 function M.setup(opts)

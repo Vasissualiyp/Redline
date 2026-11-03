@@ -5,6 +5,7 @@ Window "code":   nvim in code_dir | shell
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -196,9 +197,11 @@ def open_workspace(root: Path | None, attach: bool = True, pdf: bool = False, tw
         _tmux("split-window", "-h", "-l", "35%", "-t", code_pane, "-c", code)
         _tmux("select-window", "-t", paper)
         # the arrangement saved when this paper was last quit, else the preset
-        restore_layout(name, root, proj.cfg.layout)
+        restore_layout(name, root, proj.cfg.layout, "two" if two else "one")
     if two and not _has_session(pdf_name) and not _has_preview_pane(name):
         _start_pdf_session(root, name, pdf_name)
+        with contextlib.suppress(Exception):
+            restore_pdf_layout(pdf_name, root)
     bind_quit_key(proj.cfg.tmux_quit_key)
     agentpick.bind_key(proj.cfg.tmux_model_key)
     target = pdf_name if (pdf and two) else name
@@ -237,6 +240,8 @@ def switch_sessions(root: Path, to: str = "toggle") -> str:
         to = "one" if is_two else "two"
     from . import layout as _layout
     proj = Project.open(root)
+    with contextlib.suppress(Exception):
+        save_layout(name, root)   # the arrangement of the mode we are leaving
     if to == "two":
         if is_two:
             return f"already two sessions ({name} + {pdf_name})"
@@ -251,10 +256,9 @@ def switch_sessions(root: Path, to: str = "toggle") -> str:
         _tmux("kill-window", "-t", f"={pdf_name}:tmp")
         _tmux("set-option", "-t", f"={name}:", "@redline_pair", pdf_name)
         _tmux("set-option", "-t", f"={pdf_name}:", "@redline_pair", name)
-        try:
-            _layout.apply(proj.cfg.layout, _layout.find_window(f"={name}"))
-        except Exception:
-            pass
+        _arrange_after_switch(root, name, proj.cfg.layout, "two")
+        with contextlib.suppress(Exception):
+            restore_pdf_layout(pdf_name, root)
         return f"two sessions: {name} (nvim + agent) and {pdf_name} (PDF); attach the second with `redline open --pdf`"
     # to one
     if not is_two:
@@ -267,11 +271,27 @@ def switch_sessions(root: Path, to: str = "toggle") -> str:
     if _has_session(pdf_name):
         subprocess.run(["tmux", "kill-session", "-t", f"={pdf_name}"], capture_output=True)
     subprocess.run(["tmux", "set-option", "-u", "-t", f"={name}:", "@redline_pair"], capture_output=True)
+    _arrange_after_switch(root, name, proj.cfg.layout, "one")
+    return f"one session: {name} (the PDF is a pane again)"
+
+
+def _arrange_after_switch(root: Path, name: str, preset: str, mode: str) -> None:
+    """After moving the PDF pane out or in: the arrangement you last had in the mode we are entering, else the preset."""
+    from . import layout as _layout
     try:
-        _layout.apply(proj.cfg.layout, _layout.find_window(f"={name}"))
+        wid = _layout.find_window(f"={name}")
+    except Exception:
+        return
+    saved = read_layouts(root).get(mode, {}).get("paper")
+    if saved:
+        try:
+            return _layout.restore(wid, saved)
+        except Exception:
+            pass
+    try:
+        _layout.apply(preset, wid)
     except Exception:
         pass
-    return f"one session: {name} (the PDF is a pane again)"
 
 
 def _has_preview_pane(session: str) -> bool:
@@ -390,30 +410,55 @@ def _windows(session: str) -> dict[str, str]:
     return out
 
 
+def _layout_path(root: Path) -> Path:
+    return root / ".redline" / "layout.json"
+
+
+def read_layouts(root: Path) -> dict:
+    """{"one": {window: layout}, "two": {...}}: the arrangement of a one-session and of a two-session workspace are
+    kept apart (a three-pane layout cannot be restored onto two panes). The old flat file counts as "one"."""
+    try:
+        data = json.loads(_layout_path(root).read_text())
+    except (OSError, ValueError):
+        data = {}
+    if "one" not in data and "two" not in data:
+        data = {"one": {k: v for k, v in data.items() if k in ("paper", "code")}} if data else {}
+    return {"one": data.get("one", {}), "two": data.get("two", {})}
+
+
 def save_layout(session: str, root: Path) -> None:
-    """Remember the pane arrangement of the paper and code windows for this paper."""
+    """Remember the pane arrangement of the paper and code windows (and, in a two-session workspace, of the
+    PDF session) for this paper, under the mode it is in now."""
     from . import layout as _layout
-    saved = {}
-    for name, wid in _windows(session).items():
+    pair = _pair(session)
+    two = bool(pair)
+    main = pair[0] if two and session.endswith("-pdf") else session
+    pdf = (pair[0] if session == main else session) if two else None
+    saved: dict = {}
+    for name, wid in _windows(main).items():
         if name in ("paper", "code"):
             try:
                 saved[name] = _layout.capture(wid)
             except Exception:
                 continue
+    if pdf:
+        for line in _tmux("list-windows", "-t", f"={pdf}", "-F", "#{window_id} #{window_name}").splitlines():
+            wid, _, name = line.partition(" ")
+            if name == "pdf":
+                try:
+                    saved["pdf"] = _layout.capture(wid)
+                except Exception:
+                    pass
     if saved:
         (root / ".redline").mkdir(exist_ok=True)
-        (root / ".redline" / "layout.json").write_text(json.dumps(saved, indent=1))
+        data = read_layouts(root)
+        data["two" if two else "one"] = saved
+        _layout_path(root).write_text(json.dumps(data, indent=1))
 
 
-def restore_layout(session: str, root: Path, fallback: str) -> None:
+def restore_layout(session: str, root: Path, fallback: str, mode: str = "one") -> None:
     from . import layout as _layout
-    path = root / ".redline" / "layout.json"
-    saved = {}
-    if path.exists():
-        try:
-            saved = json.loads(path.read_text())
-        except ValueError:
-            saved = {}
+    saved = read_layouts(root).get(mode, {})
     wins = _windows(session)
     for name, wid in wins.items():
         if name in saved:
@@ -427,6 +472,21 @@ def restore_layout(session: str, root: Path, fallback: str) -> None:
                 _layout.apply(fallback, wid)
             except Exception as e:
                 print(f"layout {fallback!r}: {e}", file=sys.stderr)
+
+
+def restore_pdf_layout(pdf_session: str, root: Path) -> None:
+    """The PDF session's window (a pane you may have added next to the view)."""
+    from . import layout as _layout
+    saved = read_layouts(root).get("two", {}).get("pdf")
+    if not saved:
+        return
+    for line in _tmux("list-windows", "-t", f"={pdf_session}", "-F", "#{window_id} #{window_name}").splitlines():
+        wid, _, name = line.partition(" ")
+        if name == "pdf":
+            try:
+                _layout.restore(wid, saved)
+            except Exception as e:
+                print(f"saved pdf layout not restored: {e}", file=sys.stderr)
 
 
 def quit_now(session: str) -> None:

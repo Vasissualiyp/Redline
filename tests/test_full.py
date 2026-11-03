@@ -1185,3 +1185,51 @@ def test_split_pass_checks_sizes_and_memory_of_dismissals(home):
         outline.MERGE_MIN = 80
     assert "deliberate" in msg and msg.startswith("recorded 0")
     assert "keep apart" in outline.overview(proj)
+
+
+def test_layouts_are_kept_per_session_mode(tmp_path):
+    import json
+    from redline import launcher
+    root = tmp_path
+    (root / ".redline").mkdir()
+    # the old flat file is the one-session layout
+    (root / ".redline" / "layout.json").write_text(json.dumps({"paper": {"tree": "A"}, "code": {"tree": "B"}}))
+    assert launcher.read_layouts(root) == {"one": {"paper": {"tree": "A"}, "code": {"tree": "B"}}, "two": {}}
+    (root / ".redline" / "layout.json").write_text(json.dumps({"one": {"paper": 1}, "two": {"paper": 2, "pdf": 3}}))
+    assert launcher.read_layouts(root)["two"] == {"paper": 2, "pdf": 3} and launcher.read_layouts(root)["one"] == {"paper": 1}
+    assert launcher.read_layouts(tmp_path / "none") == {"one": {}, "two": {}}
+
+
+@pytest.mark.skipif(not __import__("shutil").which("tmux") or not __import__("shutil").which("nvim"), reason="needs tmux and nvim")
+def test_two_session_arrangement_is_saved_and_restored(tmp_path, monkeypatch):
+    import subprocess, tempfile, time, json
+    from redline import launcher
+    monkeypatch.setenv("TMUX_TMPDIR", tempfile.mkdtemp(prefix="rl", dir="/tmp"))
+    for var in ("TMUX", "TMUX_PANE", "REDLINE_ROOT"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", tempfile.mkdtemp(prefix="rl", dir="/tmp"))
+    root = tmp_path / "lay"
+    root.mkdir()
+    (root / "main.tex").write_text(PAPER)
+    config.write_default(root)
+    config.set_key(root, "agent", "cat")
+    config.set_key(root, "two_sessions", True)
+    t = lambda *a: subprocess.run(["tmux", *a], capture_output=True, text=True).stdout.strip()  # noqa: E731
+    try:
+        launcher.open_workspace(root, attach=False)
+        panes = lambda: sorted(t("list-panes", "-t", "=redline-lay:paper", "-F", "#{pane_id} #{pane_width}").splitlines())  # noqa: E731
+        w0 = {ln.split()[0]: int(ln.split()[1]) for ln in panes()}
+        agent = launcher._role_pane("redline-lay", "agent")
+        t("resize-pane", "-t", agent, "-y", "9")                        # you rearrange the two-session panes (stacked, no PDF pane)
+        time.sleep(0.2)
+        launcher.save_layout("redline-lay", root)
+        data = json.loads((root / ".redline" / "layout.json").read_text())
+        assert "paper" in data["two"] and "pdf" in data["two"] and "paper" not in data["one"]
+        launcher.quit_now("redline-lay-pdf")
+        time.sleep(0.5)
+        launcher.open_workspace(root, attach=False)                      # next time: the same arrangement
+        agent2 = launcher._role_pane("redline-lay", "agent")
+        assert abs(int(t("display", "-p", "-t", agent2, "#{pane_height}")) - 9) <= 2
+        launcher.quit_now("redline-lay")
+    finally:
+        subprocess.run(["tmux", "kill-server"], capture_output=True)

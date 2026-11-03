@@ -593,3 +593,11 @@ blocks; the others stay. `redline overview review --hashes h1,h2` does the same 
   leaves that block where it is; neither returns after a re-review. Two neighbouring paragraphs that each have 80+ words are
   never recommended for merging (the model is told merges are only for repeated points or tiny fragments), and blocks
   you kept apart are marked `(keep apart)` in what the model reads.
+
+### Layouts remember the session mode
+
+The arrangement is saved per mode in `.redline/layout.json`: `one` (a single tmux session) and `two` (nvim + agent, and
+the PDF session's window), so a two-session setup is restored as you left it, and switching modes with `gS` brings back the
+arrangement you last had in the mode you switch to (the one you leave is saved first). The overview window is part of it: whether
+it is open, sidebar or tab, its width and whether the l/w/c columns are hidden are kept per mode in
+`.redline/overview-ui.json` and restored when nvim starts (focus stays on the paper).

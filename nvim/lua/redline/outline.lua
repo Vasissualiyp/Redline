@@ -912,6 +912,7 @@ local function resize(delta)
   w = math.max(24, math.min(vim.o.columns - 20, w))
   vim.api.nvim_win_set_width(S.win, w)
   S.width, S.wide = w, false
+  M.save_ui()
 end
 
 local function toggle_wide()
@@ -924,6 +925,7 @@ local function toggle_wide()
     vim.api.nvim_win_set_width(S.win, math.floor(vim.o.columns * 0.6))
     S.wide = true
   end
+  M.save_ui()
 end
 
 local function map(lhs, fn, desc) vim.keymap.set("n", lhs, fn, { buffer = S.buf, nowait = true, silent = true, desc = "redline overview: " .. desc }) end
@@ -977,6 +979,7 @@ local function setup_buffer()
     S.hide_counts = not S.hide_counts or nil
     M.set_showbreak()
     redraw_keep()
+    M.save_ui()
   end, "show / hide the l w c columns")
   map("gw", function() M.toggle_mode() end, "sidebar <-> tab")
   map("g>", function() resize(6) end, "wider")
@@ -996,6 +999,7 @@ local function setup_buffer()
   vim.api.nvim_create_autocmd("WinResized", { callback = function()  -- a manual resize (mouse, <C-w><) is kept
     if S.mode == "side" and M.is_open() and vim.tbl_contains(vim.v.event.windows or {}, S.win) and not S.wide then
       S.width = vim.api.nvim_win_get_width(S.win)
+      M.save_ui()
     end
   end })
 end
@@ -1016,6 +1020,52 @@ local function open_window()
   M.set_showbreak()
 end
 
+-- ---- the overview window, remembered per session mode (one tmux session / two) ------------
+local function ui_mode()
+  local pane = vim.env.TMUX_PANE
+  if not pane then return "one" end
+  local r = vim.system({ "tmux", "display", "-p", "-t", pane, "#{@redline_pair}" }, { text = true }):wait()
+  return vim.trim(r.stdout or "") ~= "" and "two" or "one"
+end
+
+local function ui_path() return S.root and (S.root .. "/.redline/overview-ui.json") or nil end
+
+local function save_ui()
+  local path = ui_path()
+  if not path then return end
+  local data = {}
+  local f = io.open(path, "r")
+  if f then
+    local ok, d = pcall(vim.json.decode, f:read("*a") or "")
+    f:close()
+    if ok and type(d) == "table" then data = d end
+  end
+  local width = S.width
+  if M.is_open() and S.mode == "side" and not S.wide then width = vim.api.nvim_win_get_width(S.win) end
+  data[ui_mode()] = { open = M.is_open(), mode = S.mode, width = width, wide = S.wide or nil, hide_counts = S.hide_counts }
+  vim.fn.mkdir(S.root .. "/.redline", "p")
+  local out = io.open(path, "w")
+  if out then out:write(vim.json.encode(data)); out:close() end
+end
+M.save_ui = save_ui
+
+--- Open the overview the way this session mode had it when you left (called at start-up).
+function M.restore()
+  local root, paper = root_and_buf()
+  if not root then return end
+  S.root, S.paper = root, paper
+  local f = io.open(root .. "/.redline/overview-ui.json", "r")
+  if not f then return end
+  local ok, d = pcall(vim.json.decode, f:read("*a") or "")
+  f:close()
+  local st = ok and type(d) == "table" and d[ui_mode()]
+  if not (st and st.open) then return end
+  S.width, S.hide_counts = st.width, st.hide_counts
+  M.open(st.mode == "tab" and "tab" or "side")
+  if st.wide and S.mode == "side" and M.is_open() then toggle_wide() end
+  if M.is_open() and S.mode == "side" and paper_win() then vim.api.nvim_set_current_win(paper_win()) end -- focus stays on the paper
+end
+
 function M.set_showbreak()
   if M.is_open() then -- wrapped thoughts stay under the thought column
     vim.wo[S.win].showbreak = (" "):rep(pre_width() - 2) .. "│ "
@@ -1025,9 +1075,11 @@ end
 function M.is_open() return S.win ~= nil and vim.api.nvim_win_is_valid(S.win) end
 
 function M.close()
+  S.closing = true
   if S.paper and vim.api.nvim_buf_is_valid(S.paper) then vim.api.nvim_buf_clear_namespace(S.paper, ns_paper, 0, -1) end
   if M.is_open() then pcall(vim.api.nvim_win_close, S.win, true) end
   S.win = nil
+  if not S.switching then M.save_ui() end -- closed on purpose: it stays closed next time
 end
 
 function M.open(mode)
@@ -1066,6 +1118,7 @@ function M.open(mode)
     S.timer:stop()
     S.timer:start(1500, 0, vim.schedule_wrap(function() if M.is_open() then fetch() end end))
   end })
+  M.save_ui()
 end
 
 function M.toggle()
@@ -1074,7 +1127,9 @@ end
 
 function M.toggle_mode()
   local mode = S.mode == "side" and "tab" or "side"
+  S.switching = true
   M.close()
+  S.switching = false
   M.open(mode)
 end
 
