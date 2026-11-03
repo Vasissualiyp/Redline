@@ -482,3 +482,7 @@ shift+enter from enter) opens the paper in two sessions; the list marks such pap
 `--save` also stores the choice as the paper's setting) moves the PDF pane out into a new `-pdf` session, or joins it back
 into the editor window and closes the PDF session. The preview process is moved, not restarted, so nothing is re-rendered
 or lost. Going to two sessions only creates the second one; attach it yourself with `redline open --pdf`.
+
+When the quit menu offers "Sync to Overleaf first" and you accept, the session closes by itself once everything is on Overleaf
+(already in sync, pushed, or merged and pushed). If the sync stops short (a conflict, a refused or declined push), the
+session stays open and says so.

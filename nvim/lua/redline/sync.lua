@@ -102,7 +102,9 @@ local function run(args, visible, on_exit)
   })
 end
 
-local function push()
+-- on_done(true) is called once everything is on Overleaf, on_done(false) when the sync stops
+-- short of that (refused, failed, declined, cancelled): the quit menu uses it to close afterwards.
+local function push(on_done)
   vim.notify("redline: pushing to Overleaf…")
   run("sync push --no-pull", false, function(code, text)
     if code == 0 then
@@ -112,18 +114,22 @@ local function push()
       append(vim.split(text, "\n"))
       vim.notify("redline: push refused or failed (see the split; q closes it)", vim.log.levels.WARN)
     end
+    if on_done then on_done(code == 0) end
   end)
 end
 
-local function confirm_push(msg)
+local function confirm_push(msg, on_done)
   local yes = vim.fn.confirm(msg, "&Push\n&Not now", 1) == 1
   M.close()
   if yes then
-    push()
+    push(on_done)
+  elseif on_done then
+    on_done(false)
   end
 end
 
-function M.sync()
+function M.sync(on_done)
+  local done = function(ok) if on_done then on_done(ok) end end
   local st = core.state()
   if not st then
     return vim.notify("redline: buffer not attached")
@@ -136,14 +142,16 @@ function M.sync()
       stop_spin()
       local ok, chk = pcall(vim.json.decode, r.stdout or "", { luanil = { object = true, array = true } })
       if not ok or type(chk) ~= "table" then
-        return vim.notify("redline sync: " .. ((r.stderr or "") .. (r.stdout or "")), vim.log.levels.ERROR)
+        vim.notify("redline sync: " .. ((r.stderr or "") .. (r.stdout or "")), vim.log.levels.ERROR)
+        return done(false)
       end
       -- one side simply behind the other: update it without asking
       if chk.remote_unchanged then
         if not chk.local_edits then
-          return vim.notify("redline: already in sync with Overleaf")
+          vim.notify("redline: already in sync with Overleaf")
+          return done(true)
         end
-        return push()
+        return push(done)
       end
       local what = table.concat(chk.remote_changed, ", ")
       if chk.clean then
@@ -153,13 +161,14 @@ function M.sync()
           if code ~= 0 then
             show_output("merge failed")
             append(vim.split(text, "\n"))
-            return
+            return done(false)
           end
           if not chk.local_edits then
-            return vim.notify("redline: updated from Overleaf (" .. what .. "); nothing to push")
+            vim.notify("redline: updated from Overleaf (" .. what .. "); nothing to push")
+            return done(true)
           end
           -- both sides had edits: let the human look at the merge before it goes up
-          confirm_push("Merged Overleaf's edits in " .. what .. " with yours (no conflicts). Push now?")
+          confirm_push("Merged Overleaf's edits in " .. what .. " with yours (no conflicts). Push now?", done)
         end)
       end
       local opts = {}
@@ -174,14 +183,15 @@ function M.sync()
         prompt = "Overleaf and your copy conflict (" .. table.concat(blocks, ", ") .. "). Who merges?",
       }, function(agent)
         if not agent then
-          return
+          return done(false)
         end
         run("sync overleaf --reuse-download --no-push --agent " .. vim.fn.shellescape(agent), true,
           function(code)
             if code ~= 0 then
-              return vim.notify("redline: merge not applied (see the split; q closes it)", vim.log.levels.WARN)
+              vim.notify("redline: merge not applied (see the split; q closes it)", vim.log.levels.WARN)
+              return done(false)
             end
-            confirm_push("Merged and reloaded (agent notes in the split). Push now?")
+            confirm_push("Merged and reloaded (agent notes in the split). Push now?", done)
           end)
       end)
     end))

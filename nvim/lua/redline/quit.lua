@@ -28,7 +28,17 @@ function M.quit()
       core.flush()
       vim.fn.jobstart(rpc.shell("quit --yes"), { detach = true })
     elseif pick == 2 and #st.unpushed > 0 then
-      require("redline.sync").sync()
+      -- sync first, then close by itself; if the sync stops short (conflict, refused push,
+      -- declined) the session stays open so nothing is lost
+      require("redline.sync").sync(function(ok)
+        if ok then
+          vim.notify("redline: synced; closing the session")
+          core.flush()
+          vim.fn.jobstart(rpc.shell("quit --yes"), { detach = true })
+        else
+          vim.notify("redline: not everything is on Overleaf, so the session stays open", vim.log.levels.WARN)
+        end
+      end)
     end
   end))
 end
