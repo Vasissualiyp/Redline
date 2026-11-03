@@ -346,6 +346,8 @@ class EditPaper(ModalScreen):
             yield Select(self.options(cats), value=self.cfg.category, allow_blank=False, id="e-cat")
             yield Label("Strict refchecks: every new citation must be verified against Zotero")
             yield Switch(value=self.cfg.enforce_verification, id="e-verify")
+            yield Label("Single-editor document: only you edit it, so it syncs with Overleaf by itself")
+            yield Switch(value=self.cfg.single_editor, id="e-single")
             yield Label("Agents may read your other papers (and they may read this one)")
             yield Switch(value=self.cfg.cross_paper_access, id="e-cross")
             yield Label("Code directory (analysis code; relative paths are inside the paper)")
@@ -397,6 +399,7 @@ class EditPaper(ModalScreen):
     def action_save(self) -> None:
         q = self.query_one
         self.dismiss({"category": q("#e-cat", Select).value or "", "enforce_verification": q("#e-verify", Switch).value, "cross_paper_access": q("#e-cross", Switch).value,
+                      "single_editor": q("#e-single", Switch).value,
                       "code_dir": q("#e-code", Input).value.strip(), "notes": q("#e-notes", Input).value.strip(),
                       "overleaf_project": q("#e-ol", Input).value.strip()})
 
@@ -557,6 +560,9 @@ class Full(App):
         self.compiled_for = 0.0       # ... and the one the last compile ran on
         self.compiling = False
         self.compile_timer = None
+        self.sync_timer = None
+        self.syncing = False
+        self.last_poll = 0.0
         self.jobs: dict[str, str] = {}          # running work: key -> what it is doing
         self.started: dict[str, float] = {}
         self.placeholders: dict[str, str] = {}  # papers being created or pulled: name -> label
@@ -1026,6 +1032,50 @@ class Full(App):
             self.seen_mtime = m
             self.load_changes()
             self.schedule_compile()
+            self.schedule_autosync()
+        else:
+            cfg = self.qpane.proj.cfg if self.qpane else None
+            import time
+            if cfg and cfg.single_editor and time.monotonic() - self.last_poll >= cfg.auto_sync_poll:
+                self.last_poll = time.monotonic()
+                self.autosync()  # look for edits made on Overleaf itself
+
+    def schedule_autosync(self) -> None:
+        """single_editor papers: sync with Overleaf once the paper has been quiet for auto_sync_seconds."""
+        import time
+        cfg = self.qpane.proj.cfg if self.qpane else None
+        if not (cfg and cfg.single_editor):
+            return
+        if self.sync_timer is not None:
+            self.sync_timer.stop()
+        self.last_poll = time.monotonic()
+        self.sync_timer = self.set_timer(cfg.auto_sync_seconds, self.autosync)
+
+    def autosync(self) -> None:
+        if self.level == "changes" and self.paper and not self.syncing:
+            self.sync_paper(self.paper)
+
+    @work(thread=True, group="autosync")
+    def sync_paper(self, root: Path) -> None:
+        from . import sync as _sync
+        from .state import Project
+        self.syncing = True
+        key = f"sync:{root}"
+        self.busy(key, "syncing with Overleaf…")
+        say = lambda s: self.call_from_thread(self.say, s)  # noqa: E731
+        try:
+            state, text = _sync.auto(Project.open(root))
+            if state in ("pushed", "pulled"):
+                say(f"Overleaf: {state} ({text.splitlines()[0][:100] if text else ''})")
+                if state == "pulled" or "merged" in text:
+                    self.call_from_thread(self.load_changes)
+            elif state in ("conflict", "blocked"):
+                say(f"Overleaf sync needs you ({state}): {text.splitlines()[0][:120] if text else ''}")
+        except RedlineError as e:
+            say(f"Overleaf sync failed: {e}")
+        finally:
+            self.syncing = False
+            self.busy(key, None)
 
     def schedule_compile(self, delay: float = 10.0) -> None:
         """Rebuild the PDF once the paper has been quiet for a while (as in the editor)."""

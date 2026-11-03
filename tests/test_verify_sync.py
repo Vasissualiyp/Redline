@@ -249,3 +249,75 @@ def test_edit_between_check_and_take_is_kept(paper):
     sync.finish_merge(s.proj, chk)
     t = s.proj.read()
     assert "Coauthor text." in t and "Population III stars" in t
+
+
+# ---- single_editor: automatic sync ---------------------------------------------------
+@pytest.fixture
+def auto_paper(paper, monkeypatch):
+    s, overleaf = paper
+
+    class Ok:
+        ok = True
+    monkeypatch.setattr(sync._compile, "run", lambda proj: Ok())
+    pushed = []
+
+    def fake_ols(proj, args, cwd, timeout=600):
+        for f in cwd.iterdir():
+            if f.is_file() and not f.name.startswith("."):
+                shutil.copy(f, overleaf / f.name)
+        pushed.append(1)
+        return "Synced"
+    monkeypatch.setattr(sync, "_run_ols", fake_ols)
+    return s, overleaf, pushed
+
+
+def test_auto_idle_then_pushes_local_edits(auto_paper):
+    s, overleaf, pushed = auto_paper
+    assert sync.auto(s.proj)[0] == "idle" and not pushed
+    s.proj.main.write_text(FIX.read_text().replace("Pop III stars", "Population III stars"))
+    state, text = sync.auto(s.proj)
+    assert state == "pushed" and pushed and "Population III stars" in (overleaf / "paper.tex").read_text()
+    assert sync.auto(s.proj)[0] == "idle"
+
+
+def test_auto_takes_overleaf_edits_and_merges_cleanly(auto_paper):
+    s, overleaf, pushed = auto_paper
+    (overleaf / "paper.tex").write_text(FIX.read_text().replace("more text.", "Coauthor text."))
+    state, text = sync.auto(s.proj)
+    assert state == "pulled" and "Coauthor text" in s.proj.read() and not pushed
+    # both sides, different places: merged, then pushed
+    (overleaf / "paper.tex").write_text((overleaf / "paper.tex").read_text().replace("Coauthor text.", "More coauthor."))
+    s.proj.main.write_text(s.proj.read().replace("Pop III stars", "Population III stars"))
+    state, text = sync.auto(s.proj)
+    assert state == "pushed" and "merged" in text
+    t = (overleaf / "paper.tex").read_text()
+    assert "More coauthor." in t and "Population III stars" in t
+
+
+def test_auto_never_resolves_a_conflict(auto_paper):
+    s, overleaf, pushed = auto_paper
+    (overleaf / "paper.tex").write_text(FIX.read_text().replace("at a high rate.", "at a very high rate."))
+    s.proj.main.write_text(FIX.read_text().replace("at a high rate.", "at a moderate rate."))
+    state, text = sync.auto(s.proj)
+    assert state == "conflict" and not pushed and "moderate rate" in s.proj.read() and "<<<<<<<" not in s.proj.read()
+
+
+def test_auto_blocked_by_lint_and_busy_lock(auto_paper):
+    import fcntl
+    s, overleaf, pushed = auto_paper
+    s.proj.main.write_text(s.proj.read().replace("\\end{document}", "\\added{oops\n\\end{document}"))
+    assert sync.auto(s.proj)[0] == "blocked" and not pushed
+    with open(s.proj.dir / "autosync.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        assert sync.auto(s.proj)[0] == "busy"
+
+
+def test_auto_skips_the_compile_when_a_clean_build_is_current(auto_paper, monkeypatch):
+    s, overleaf, pushed = auto_paper
+    calls = []
+    monkeypatch.setattr(sync._compile, "run", lambda proj: calls.append(1) or type("R", (), {"ok": True})())
+    s.proj.main.write_text(FIX.read_text().replace("Pop III stars", "Population III stars"))
+    pdf = sync._compile.view_pdf(s.proj)
+    pdf.parent.mkdir(parents=True, exist_ok=True)
+    pdf.write_bytes(b"%PDF")        # newer than the source: nothing to rebuild
+    assert sync.auto(s.proj)[0] == "pushed" and not calls

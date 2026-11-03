@@ -137,6 +137,15 @@ def view_pdf(proj: Project) -> Path:
     return proj.dir / "view" / (proj.main.stem + ".pdf")
 
 
+def fresh(proj: Project) -> bool:
+    """The last clean PDF is newer than every .tex file: compiling again would change nothing."""
+    pdf = view_pdf(proj)
+    if not pdf.exists():
+        return False
+    newest = max((f.stat().st_mtime for f in proj.cfg.root.glob("*.tex")), default=0.0)
+    return pdf.stat().st_mtime >= newest
+
+
 def publish(proj: Project) -> None:
     """Copy the built PDF (and its synctex) to the view, replacing it in one step."""
     src = pdf_path(proj)

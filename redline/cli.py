@@ -100,7 +100,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--isolate", action="store_true")
     p.add_argument("--json", action="store_true")
     p = sub.add_parser("sync", help="Overleaf: init | pull | push | check | overleaf | finish")
-    p.add_argument("action", choices=["init", "pull", "push", "check", "overleaf", "finish"],
+    p.add_argument("action", choices=["init", "pull", "push", "check", "overleaf", "finish", "auto"],
                    help="overleaf = sync: push if Overleaf is unchanged, else merge with an agent first")
     p.add_argument("--force", action="store_true", help="push despite lint/compile errors")
     p.add_argument("--no-pull", action="store_true", help="push without pulling/merging first")
@@ -108,6 +108,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-push", action="store_true", help="stop after merging")
     p.add_argument("--yes", action="store_true", help="do not ask before pushing")
     p.add_argument("--json", action="store_true")
+    p.add_argument("--enabled", action="store_true", help="auto: only say whether single_editor auto-sync is on (exit 0/1)")
     p.add_argument("--reuse-download", action="store_true",
                    help="reuse an Overleaf download made in the last 10 minutes")
     p = sub.add_parser("agents", help="configured merge agents")
@@ -194,12 +195,13 @@ def _categories_cmd(a: argparse.Namespace) -> int:
         print("removed " + ", ".join(gone))
     else:  # set NAME key=value
         key, _, val = (a.extra or "").partition("=")
-        if key not in ("category", "notes", "enforce_verification", "cross_paper_access", "code_dir", "overleaf_project") or not _:
+        if key not in ("category", "notes", "enforce_verification", "cross_paper_access", "single_editor", "code_dir",
+                       "overleaf_project") or not _:
             print("usage: redline full set NAME key=value (category, notes, enforce_verification, code_dir, "
                   "overleaf_project)", file=sys.stderr)
             return 2
         root = registry.find(a.name)
-        config.set_key(root, key, val.lower() in ("true", "1", "yes", "on") if key in ("enforce_verification", "cross_paper_access") else val)
+        config.set_key(root, key, val.lower() in ("true", "1", "yes", "on") if key in ("enforce_verification", "cross_paper_access", "single_editor") else val)
         print(f"{root.name}: {key} = {val}")
     return 0
 
@@ -444,6 +446,18 @@ def _sync_cmd(s, a: argparse.Namespace) -> int:
         print(out)
         return 1 if ("CONFLICT" in out or "not pushing" in out or "nothing applied" in out) else 0
 
+    if a.action == "auto":
+        cfg = s.proj.cfg
+        if a.enabled:
+            print(json.dumps({"enabled": cfg.single_editor, "seconds": cfg.auto_sync_seconds, "poll": cfg.auto_sync_poll}))
+            return 0 if cfg.single_editor else 1
+        if not cfg.single_editor:
+            print("single_editor is off for this paper (redline full set PAPER single_editor=true)")
+            return 5
+        from . import sync as _s
+        state, text = _s.auto(s.proj)
+        print(json.dumps({"state": state, "text": text}) if a.json else f"{state}: {text}")
+        return {"idle": 0, "pushed": 0, "pulled": 0, "busy": 4}.get(state, 3)
     if a.action == "init":
         return done(s.sync_init())
     if a.action == "pull":

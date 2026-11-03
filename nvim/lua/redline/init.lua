@@ -296,7 +296,10 @@ function M.attach(buf)
       { group = group, buffer = buf, callback = function() autosave() end })
   end
   vim.api.nvim_create_autocmd({ "TextChanged", "InsertLeave" },
-    { group = group, buffer = buf, callback = function() require("redline.autocompile").poke(buf) end })
+    { group = group, buffer = buf, callback = function()
+      require("redline.autocompile").poke(buf)
+      require("redline.autosync").poke(buf)
+    end })
   watch(buf)
   require("redline.review").buffer_maps(buf)
   M.refresh(buf)

@@ -451,3 +451,14 @@ changes, notes), `paper_outline`, `paper_read`, `paper_changes` and `paper_searc
 paper still go through that paper's own session. `cross_paper_access = false` in a paper's `.redline.toml` (a switch in its
 edit screen, or `redline full set PAPER cross_paper_access=false`) makes it private in both directions: its agent sees no
 other paper and no other agent sees it. Restart the agent (or its MCP server) once to pick up the new tools.
+
+## Single-editor papers: automatic Overleaf sync
+
+`single_editor = true` (edit screen, `redline full set PAPER single_editor=true`, or `.redline.toml`) says nobody else
+edits the paper, so it syncs with Overleaf by itself instead of on demand. In nvim and in the `redline full` quick menu,
+`auto_sync_seconds` (default 20) after the last edit (yours, or an agent's) a background `redline sync auto` runs: push if
+Overleaf is unchanged; take Overleaf's edits when it is ahead, merging first when both sides changed without conflicts.
+Every `auto_sync_poll` seconds (default 120) it also looks for edits made on Overleaf itself. Nothing blocks the editor;
+the statusline shows an animated "syncing". It never resolves a conflict and never pushes lint or compile errors (it says
+so once); it skips the recompile when a clean build of exactly this text exists, and a lock keeps two syncs from running at
+once. `redline sync auto [--json]` is the same step from the shell (exit 3: needs you, 4: another sync running).

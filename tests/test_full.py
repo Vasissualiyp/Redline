@@ -544,3 +544,16 @@ def test_agents_can_read_other_papers_unless_private(home):
         others.papers(Project.open(a))
     from redline import mcp_server
     assert "paper_read" in mcp_server.INSTRUCTIONS
+
+
+def test_single_editor_flag(home, capsys):
+    from redline import cli
+    a = make_paper(home, "alpha")
+    assert config.load(a).single_editor is False
+    assert cli.main(["-C", str(a), "sync", "auto"]) == 5          # off: does nothing
+    assert cli.main(["full", "set", "alpha", "single_editor=true"]) == 0
+    cfg = config.load(a)
+    assert cfg.single_editor is True and (cfg.auto_sync_seconds, cfg.auto_sync_poll) == (20, 120)
+    capsys.readouterr()
+    assert cli.main(["-C", str(a), "sync", "auto", "--enabled"]) == 0
+    assert '"enabled": true' in capsys.readouterr().out

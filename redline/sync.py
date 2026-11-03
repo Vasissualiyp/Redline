@@ -238,7 +238,7 @@ def pull(proj: Project) -> SyncReport:
     return rep
 
 
-def push(proj: Project, force: bool = False, skip_pull: bool = False) -> SyncReport:
+def push(proj: Project, force: bool = False, skip_pull: bool = False, fresh_ok: bool = False) -> SyncReport:
     ensure_ignores(proj.cfg.root)
     rep = SyncReport() if skip_pull else pull(proj)
     if rep.conflicts:
@@ -249,10 +249,11 @@ def push(proj: Project, force: bool = False, skip_pull: bool = False) -> SyncRep
         rep.messages.append("not pushing: lint errors (run `redline lint --fix`):\n"
                             + "\n".join(f"  l.{i.line} {i.code}: {i.message}" for i in errors[:10]))
         return rep
-    res = _compile.run(proj)
-    if not res.ok and not force:
-        rep.messages.append("not pushing: compile failed\n" + _compile.format_report(res))
-        return rep
+    if not (fresh_ok and _compile.fresh(proj)):  # fresh_ok: a clean build of exactly this text exists
+        res = _compile.run(proj)
+        if not res.ok and not force:
+            rep.messages.append("not pushing: compile failed\n" + _compile.format_report(res))
+            return rep
     if proj.cfg.pre_push:
         r = subprocess.run(proj.cfg.pre_push, shell=True, cwd=proj.cfg.root,
                            capture_output=True, text=True, env=_clean_env())
@@ -285,6 +286,40 @@ def push(proj: Project, force: bool = False, skip_pull: bool = False) -> SyncRep
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     return rep
+
+
+# ---- automatic sync (single_editor papers) ------------------------------------
+def auto(proj: Project) -> tuple[str, str]:
+    """One background sync round; (state, text). state: idle | pushed | pulled | conflict | blocked | busy.
+
+    Overleaf unchanged: push local edits. Overleaf ahead, or both changed without conflicts:
+    merge, then push. Real conflicts, lint/compile errors: nothing is touched, the state says so."""
+    import fcntl
+    proj.dir.mkdir(parents=True, exist_ok=True)
+    with open(proj.dir / "autosync.lock", "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return "busy", "another sync is running"
+        if not (proj.dir / "base").exists():
+            return "blocked", "no sync base yet: run `redline sync init`"
+        chk = check(proj)
+        if chk.remote_unchanged:
+            if not chk.local_edits:
+                return "idle", "in sync with Overleaf"
+            rep = push(proj, skip_pull=True, fresh_ok=True)
+            return ("pushed" if rep.pushed else "blocked"), rep.text()
+        if chk.both_changed and not chk.clean:
+            return "conflict", chk.text() + "\nOverleaf and this paper both changed the same text: sync by hand (O)"
+        if chk.both_changed:
+            prepare_merge(proj, chk)
+        rep = finish_merge(proj, chk, use_git=True)
+        if rep.conflicts:
+            return "conflict", rep.text()
+        if not chk.local_edits:
+            return "pulled", "took Overleaf's edits: " + ", ".join(chk.remote_changed)
+        rep2 = push(proj, skip_pull=True, fresh_ok=True)
+        return ("pushed" if rep2.pushed else "blocked"), "merged Overleaf's edits and " + rep2.text()
 
 
 # ---- "Sync to Overleaf": push if Overleaf is unchanged, otherwise merge ------

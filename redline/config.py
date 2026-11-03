@@ -44,6 +44,12 @@ enforce_verification = {enforce_verification}
 # Agents may read your other papers (outline, text, changes, search) through the Redline tools,
 # and the other papers' agents may read this one. false = this paper is private to its own agent.
 cross_paper_access = true
+# Only you edit this paper (no coauthors): sync with Overleaf by itself, in the background, as
+# soon as the paper has been quiet for auto_sync_seconds, and look for Overleaf edits every
+# auto_sync_poll seconds. Conflicts are never resolved automatically.
+single_editor = false
+auto_sync_seconds = 20
+auto_sync_poll = 120
 # Shell command run before pushing (e.g. rsync fresh plots into light/).
 pre_push = ""
 compile_timeout = 600
@@ -124,6 +130,9 @@ class Config:
     tmux_model_key: str = "A"
     enforce_verification: bool = True
     cross_paper_access: bool = True
+    single_editor: bool = False
+    auto_sync_seconds: int = 20
+    auto_sync_poll: int = 120
     category: str = ""      # tree path in the `redline full` list, e.g. "Papers/Pop III"
     notes: str = ""
     mcp_extra: dict[str, list[str]] = field(default_factory=lambda: {"zotero": ["zotero-mcp"]})
@@ -204,6 +213,11 @@ def load(root: Path | None = None) -> Config:
             setattr(cfg, k, str(data[k]))
     if "enforce_verification" in data:
         cfg.enforce_verification = bool(data["enforce_verification"])
+    if "single_editor" in data:
+        cfg.single_editor = bool(data["single_editor"])
+    for k in ("auto_sync_seconds", "auto_sync_poll"):
+        if k in data:
+            setattr(cfg, k, max(5, int(data[k])))
     if "cross_paper_access" in data:
         cfg.cross_paper_access = bool(data["cross_paper_access"])
     if "compile_timeout" in data:
