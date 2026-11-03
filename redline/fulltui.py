@@ -1238,7 +1238,7 @@ class Full(App):
                     continue
                 if val != getattr(cfg, key) or key == "code_dir" and val != cfg.code_dir:
                     if key == "code_dir":
-                        want = str((it.path / val).resolve()) if not Path(val).is_absolute() else val
+                        want = os.path.normpath(it.path / val) if not Path(val).is_absolute() else val  # lexical: no disk access
                         if want == cfg.code_dir:
                             continue
                     config.set_key(it.path, key, val)
@@ -1510,6 +1510,11 @@ def run() -> int:
         record_full_location()  # `redline full back` / nvim :Redline full come back to this window
     app = Full()
     app.run()
+    if not app.open_root:
+        # a worker stuck in I/O on a dead mount must not keep the process alive after you quit
+        import sys
+        sys.stdout.flush()
+        os._exit(0)
     if app.open_root:
         from .launcher import open_workspace
         two = True if getattr(app, "open_two", False) else None

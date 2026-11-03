@@ -1094,3 +1094,26 @@ def test_full_reclassification_resets_everything_that_depends_on_thoughts(home):
     o = outline.build(proj)
     assert (o["thoughts"], o["missing"], o["suggestions"], o["flags"], o["dismissed"]) == (0, 5, 0, 0, 0)
     assert outline.load_store(proj)["plan"] is not None          # your draft plan is not touched
+
+
+def test_a_hung_code_dir_mount_is_never_touched_by_setup(home, monkeypatch):
+    """code_dir on a stale sshfs mount froze `redline open` (resolve() in code_ignores): setup must not touch it."""
+    from pathlib import Path as P
+    d = make_paper(home)
+    hung = "/mnt/hung-cluster/analysis"
+    config.set_key(d, "code_dir", hung)
+    touched = []
+    for name in ("resolve", "exists", "is_dir", "stat", "lstat", "iterdir"):
+        real = getattr(P, name)
+
+        def guard(self, *a, __real=real, __name=name, **k):
+            if "hung-cluster" in str(self):
+                touched.append(__name)
+                raise RuntimeError("touched the hung mount")
+            return __real(self, *a, **k)
+        monkeypatch.setattr(P, name, guard)
+    assert config.code_ignores(d, hung) == []
+    assert config.code_ignores(d, "analysis") == ["analysis", "analysis/*"]
+    assert sync.ensure_ignores(d) is not None
+    assert config.load(d).code_dir == hung
+    assert not touched, touched

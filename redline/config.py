@@ -1,6 +1,7 @@
 """Per-paper configuration (`.redline.toml` in the paper directory)."""
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import tomllib
@@ -271,8 +272,13 @@ def write_default(root: Path, code_dir: str = "", overleaf_project: str = "",
         if not code_dir:
             code_dir = DEFAULT_CODE_DIR
         target = root / os.path.expanduser(code_dir)
-        if code_dir == DEFAULT_CODE_DIR or not target.exists():
+        if code_dir == DEFAULT_CODE_DIR:
             target.mkdir(parents=True, exist_ok=True)
+        else:  # an explicit directory: create it only if it is plainly missing (a hung mount must not block this)
+            from .codeaccess import is_dir_within
+            if is_dir_within(target, 3) is False:
+                with contextlib.suppress(OSError):
+                    target.mkdir(parents=True, exist_ok=True)
         path.write_text(DEFAULT_TOML.format(main=detect_main(root), code_dir=code_dir, overleaf_project=overleaf_project,
                                             enforce_verification="true" if enforce_verification else "false"))
     return path
@@ -282,8 +288,10 @@ def code_ignores(root: Path, code_dir: str) -> list[str]:
     """Ignore entries for a code directory that lives inside the paper."""
     if not code_dir:
         return []
+    # lexical only, never the disk: code_dir is often a cluster mount (sshfs) that may hang, and a
+    # resolve() of it froze `redline open` and the redline full list in uninterruptible I/O
     try:
-        rel = (root / os.path.expanduser(code_dir)).resolve().relative_to(root.resolve())
+        rel = Path(os.path.normpath(root / os.path.expanduser(code_dir))).relative_to(Path(os.path.normpath(root)))
     except ValueError:
         return []
     return [str(rel), f"{rel}/*"] if str(rel) != "." else []
