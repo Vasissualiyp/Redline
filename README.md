@@ -552,3 +552,21 @@ of freezing, and `redline open` starts the code window in the paper directory. R
 The PDF highlight of a block covers the whole block however long it is: the overview sends all of its text, the pane asks
 synctex about up to 24 lines spread over it, and a block that runs over several pages is searched on all of them (up to eight);
 the pane shows its first two pages stitched.
+
+### Recommendations in the overview
+
+- **What waits for you:** a gutter after l/w/c shows, per paragraph, `✎N` pending edits (orange: some undecided, magenta:
+  `%N` waiting on the agent, red: marked `%X`, green: all `%Y`) and `✉N` comments (cyan; a change's own explanation counts).
+  Sections sum their blocks; the header says how many blocks need review.
+- **✂ split recommended:** while writing thoughts the model may flag a long block (`outline_split_words`, default 200) that holds
+  two or more *separate*, individually substantial ideas (e.g. a long paragraph describing two figure panels at length). A short
+  paragraph is never flagged, nor related ideas that belong together (two related panels in 100 words). The parts show under the
+  row; `gs` pre-fills its split request with them; `]s` `[s` jump between them.
+- **Dismissing:** `gd` dismisses the recommendations on a block; they stay away until that block is run through the model again
+  (`gR`, which rewrites its thought). A paragraph you edit gets a stale thought and loses its recommendation until refreshed.
+- **Structure review:** once every thought is up to date (`outline_review = true`, or `gv`), the same cheap model reads all the
+  thoughts together, knowing the split flags, and recommends **moves** and **merges** (`⇢` lines). `ga` accepts one (a move goes into
+  your draft plan, a merge marks the blocks for `gm`), `gd` dismisses it.
+- **Full reclassification:** `gW` / `gC` (after a confirmation screen listing what is dropped) runs every block through the model
+  again and resets everything that depends on the thoughts (recommendations, flow flags, dismissals); use it after changing how
+  thoughts are written. Your draft plan and marks stay.

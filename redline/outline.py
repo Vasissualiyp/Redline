@@ -266,7 +266,7 @@ def load_store(proj: Project) -> dict:
         data = json.loads(_path(proj).read_text())
     except (OSError, ValueError):
         data = {}
-    for k, v in (("thoughts", {}), ("last", []), ("flags", []), ("plan", None)):
+    for k, v in (("thoughts", {}), ("last", []), ("flags", []), ("plan", None), ("suggestions", [])):
         data.setdefault(k, v)
     return data
 
@@ -291,7 +291,7 @@ def _carry(old: list[dict], new: list[Block], thoughts: dict) -> dict[int, dict]
             for i in range(i1, i2):
                 if i in used or old[i]["kind"] != new[j].kind or old[i]["hash"] not in thoughts:
                     continue
-                r = difflib.SequenceMatcher(None, old[i]["head"], new[j].text[:200]).ratio()
+                r = difflib.SequenceMatcher(None, old[i]["head"], new[j].text[:200], autojunk=False).ratio()
                 if r > score:
                     best, score = i, r
             if best is not None:
@@ -308,6 +308,25 @@ def _span(nodes: list[dict], k: int) -> int:
             break
         n += 1
     return n
+
+
+def review_stats(doc: Document, a: int, b: int) -> dict:
+    """What in doc.src[a:b] waits for a human: pending edits (by their review marker) and comments."""
+    st = {"edits": 0, "unrated": 0, "accepted": 0, "rejected": 0, "noted": 0, "comments": 0}
+    for it in doc.items:
+        if it.start >= b or it.full_end <= a:
+            continue
+        if it.kind == "comment":
+            st["comments"] += 1
+            continue
+        st["edits"] += 1
+        k = it.marker.kind if it.marker else None
+        st["unrated"] += k is None
+        st["accepted"] += k == "Y"
+        st["rejected"] += k == "X"
+        st["noted"] += k == "N"
+        st["comments"] += it.comment is not None   # the explanation of a change is a comment to read
+    return st
 
 
 def build(proj: Project, doc: Document | None = None) -> dict:
@@ -329,7 +348,10 @@ def build(proj: Project, doc: Document | None = None) -> dict:
                 "number": b.number,
                 "lines": [b.line_start, b.line_end], "text": b.text if b.kind != "heading" else b.title,
                 "thought": t["thought"] if t else None, "stale": stale, "model": t.get("model", "") if t else "",
-                "parent": b.parent, "flags": [f for f in flags if b.hash in f.get("hashes", [])], **b.counts()}
+                "split": (t.get("split") if t and not stale and not t.get("split_dismissed") else None),
+                "suggestions": [x for x in store.get("suggestions", [])
+                                if x["hashes"][0] == b.hash and not x.get("dismissed") and set(x["hashes"]) <= hashes],
+                "parent": b.parent, "review": review_stats(doc, b.start, b.end), "flags": [f for f in flags if b.hash in f.get("hashes", [])], **b.counts()}
         if b.kind == "heading":
             node["chars"] = node["words"] = 0
         nodes.append(node)
@@ -348,6 +370,12 @@ def build(proj: Project, doc: Document | None = None) -> dict:
                     tot_c += m["chars"]
                     tot_w += m["words"]
             n["chars"], n["words"] = tot_c, tot_w
+            tot = {k: 0 for k in n["review"]}
+            for m in nodes[k + 1:k + 1 + _span(nodes, k)]:
+                if m["kind"] not in ("heading", "item"):
+                    for kk, vv in m["review"].items():
+                        tot[kk] += vv
+            n["review"] = tot
             n["nlines"] = sum(m["nlines"] for m in nodes[k + 1:k + 1 + _span(nodes, k)] if m["kind"] not in ("heading", "item"))
     saved_last = [{"hash": b.hash, "kind": b.kind, "head": b.text[:200]} for b in bl]
     if [x["hash"] for x in store["last"]] != [x["hash"] for x in saved_last] or flags != store["flags"]:
@@ -355,11 +383,22 @@ def build(proj: Project, doc: Document | None = None) -> dict:
         save_store(proj, store)
     body = [n for n in nodes if n["kind"] != "heading"]
     return {"nodes": nodes, "total": len(body), "stale": sum(1 for n in body if n["stale"]),
+            "splits": sum(1 for n in body if n.get("split")),
+            "to_review": sum(1 for n in body if n["review"]["edits"] or n["review"]["comments"]),
+            "dismissed": sum(1 for t in thoughts.values() if t.get("split_dismissed"))
+                         + sum(1 for x in store.get("suggestions", []) if x.get("dismissed")),
+            "thoughts": sum(1 for n in body if n["thought"] is not None),
+            "model": getattr(proj.cfg, "outline_model", ""), "review_after": bool(getattr(proj.cfg, "outline_review", True)),
+            "suggestions": sum(len(n["suggestions"]) for n in body),
             "missing": sum(1 for n in body if n["thought"] is None), "flags": len(flags),
             "plan": store["plan"]}
 
 
 # ---- what the agent does ----------------------------------------------------------
+def split_words(proj: Project) -> int:
+    return max(60, int(getattr(proj.cfg, "outline_split_words", 200)))
+
+
 def words_limit(proj: Project) -> int:
     return max(4, int(getattr(proj.cfg, "outline_words", DEFAULT_WORDS)))
 
@@ -374,7 +413,13 @@ def pending(proj: Project, limit: int = 40) -> str:
     out = [f"{len(todo)} block(s) need a thought (showing {min(limit, len(todo))}). For each: a SHORT phrase, "
            f"{w} words or fewer, no filler, in the paper's terms: the one idea the block adds (a figure: what it shows; "
            "a list: its point; an equation: what it defines). Telegraphic is fine ('Turbulence drives fragmentation', "
-           "'Disk Q profile over time'). Then call record_thoughts once with [{hash, thought}, ...].", ""]
+           "'Disk Q profile over time'). Then call record_thoughts once with [{hash, thought}, ...].",
+           f"SPLIT RECOMMENDED: only when a block of {split_words(proj)}+ words holds two or more SEPARATE ideas that are each "
+           "substantial (roughly 80+ words of their own, e.g. a long paragraph that describes two figure panels at length). "
+           "Then add \"split\": [\"first idea\", \"second idea\"] (short phrases) to its item. A short block is never "
+           "flagged, however many things it mentions: a 100-word paragraph describing two panels is fine, as long as the "
+           "panels are related (a reader wants them together); neither is one idea told at length. Unrelated ideas "
+           "glued into one paragraph are the case to flag.", ""]
     sec = ""
     for n in todo[:limit]:
         for h in reversed(o["nodes"][:n["index"]]):
@@ -391,7 +436,7 @@ def record(proj: Project, items: list[dict], model: str = "") -> str:
     o = build(proj)
     known = {n["hash"] for n in o["nodes"] if n["kind"] != "heading"}
     store = load_store(proj)
-    done, bad, long_ = 0, [], []
+    done, bad, long_, ignored_split = 0, [], [], []
     limit = words_limit(proj)
     for it in items:
         h, t = str(it.get("hash", "")).strip(), " ".join(str(it.get("thought", "")).split())
@@ -403,12 +448,23 @@ def record(proj: Project, items: list[dict], model: str = "") -> str:
         if len(t.split()) > limit + SLACK:
             long_.append(f"{h} ({len(t.split())} words)")
             continue
-        store["thoughts"][h] = {"thought": t[:MAX_THOUGHT], "model": model, "at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+        split = it.get("split")
+        if isinstance(split, str):
+            split = [x.strip() for x in re.split(r"\s*(?:\||;)\s*", split) if x.strip()]
+        split = [" ".join(str(x).split())[:60] for x in (split or []) if str(x).strip()]
+        words_of = next((n["words"] for n in o["nodes"] if n["hash"] == h), 0)
+        if split and (len(split) < 2 or words_of < split_words(proj)):
+            ignored_split.append(h)   # short blocks (or a single idea) are never "split recommended"
+            split = []
+        store["thoughts"][h] = {"thought": t[:MAX_THOUGHT], "model": model, "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                                **({"split": split} if split else {})}
         done += 1
     save_store(proj, store)
     msg = f"recorded {done} thought(s)"
     if bad:
         msg += f"; unknown hashes ignored (the block changed meanwhile?): {', '.join(bad)}"
+    if ignored_split:
+        msg += (f"; split ignored for {len(ignored_split)} block(s) (under {split_words(proj)} words, or one idea)")
     if long_:
         msg += (f"; NOT recorded, too long (max {limit} words, shorter please): {', '.join(long_)}; "
                 "send these again, shortened")
@@ -425,7 +481,8 @@ def overview(proj: Project) -> str:
             out.append(f"{pad}§ {n['title']}")
         else:
             t = n["thought"] or "(no thought yet)"
-            out.append(f"{pad}- {n['hash']} [{n['kind']}, {n['words']}w] {t}" + (" (stale)" if n["stale"] else ""))
+            out.append(f"{pad}- {n['hash']} [{n['kind']}, {n['words']}w] {t}" + (" (stale)" if n["stale"] else "")
+                       + (f" (split recommended: {' | '.join(n['split'])})" if n.get("split") else ""))
     return "\n".join(out)
 
 
@@ -551,7 +608,8 @@ def edit_message(proj: Project, op: str, hashes: list[str], instruction: str = "
     out.append("")
     for n in chosen:
         out.append(f"- [{n['kind']}] hash {n['hash']}, l.{n['lines'][0]}-{n['lines'][1]}, {n['words']}w"
-                   + (f", thought: «{n['thought']}»" if n["thought"] else ""))
+                   + (f", thought: «{n['thought']}»" if n["thought"] else "")
+                   + (f", suggested split into: {' | '.join(n['split'])}" if op == "split" and n.get("split") else ""))
         out.append("    " + n["text"][:1500])
     return "\n".join(out)
 
@@ -566,11 +624,94 @@ def flow_task() -> str:
             "Do not edit the paper.")
 
 
+def dismiss(proj: Project, hashes: list[str]) -> str:
+    """Dismiss the recommendations on these blocks (split, move, merge). They stay away until the
+    block is run through the model again (its thought is rewritten)."""
+    store = load_store(proj)
+    n = 0
+    for h in hashes:
+        t = store["thoughts"].get(h)
+        if t and t.get("split") and not t.get("split_dismissed"):
+            t["split_dismissed"] = True
+            n += 1
+        for x in store["suggestions"]:
+            if x["hashes"][0] == h and not x.get("dismissed"):
+                x["dismissed"] = True
+                n += 1
+    save_store(proj, store)
+    return f"dismissed {n} recommendation(s)"
+
+
+def forget_blocks(proj: Project, hashes: list[str]) -> str:
+    """Drop the thoughts of these blocks only, so the next refresh runs exactly them through the model."""
+    store = load_store(proj)
+    n = sum(1 for h in hashes if store["thoughts"].pop(h, None) is not None)
+    store["suggestions"] = [x for x in store["suggestions"] if x["hashes"][0] not in hashes]
+    save_store(proj, store)
+    return f"{n} thought(s) dropped"
+
+
+SUGGEST_OPS = ("move", "merge")
+
+
+def record_suggestions(proj: Project, items: list[dict]) -> str:
+    """Store the model's rearrangement / merge recommendations (replacing its earlier ones).
+
+    move:  {op: "move", hash, after (a hash, or null for the start of the body), note}
+    merge: {op: "merge", hashes: [h1, h2, ...] (in paper order), note}"""
+    o = build(proj)
+    known = {n["hash"]: n for n in o["nodes"]}
+    store = load_store(proj)
+    keep = [x for x in store["suggestions"] if x.get("source") != "agent"]
+    n, bad = 0, []
+    for it in items:
+        op = it.get("op")
+        note = " ".join(str(it.get("note", "")).split())[:200]
+        if op == "move":
+            h, after = str(it.get("hash", "")), it.get("after")
+            if h not in known or (after and after not in known) or h == after or known[h]["kind"] == "heading":
+                bad.append(h or "?")
+                continue
+            hs = [h]
+            entry = {"op": "move", "hashes": hs, "after": after or None}
+        elif op == "merge":
+            hs = [str(x) for x in (it.get("hashes") or [])]
+            if len(hs) < 2 or any(x not in known or known[x]["kind"] == "heading" for x in hs):
+                bad.append(",".join(hs) or "?")
+                continue
+            order = [x["hash"] for x in o["nodes"]]
+            hs.sort(key=order.index)
+            entry = {"op": "merge", "hashes": hs}
+        else:
+            bad.append(str(op))
+            continue
+        keep.append({**entry, "note": note, "source": "agent", "at": time.strftime("%Y-%m-%dT%H:%M:%S")})
+        n += 1
+    store["suggestions"] = keep
+    save_store(proj, store)
+    return f"recorded {n} suggestion(s)" + (f"; invalid ignored: {', '.join(bad)}" if bad else "")
+
+
+def review_task(proj: Project) -> str:
+    return ("You are reviewing the structure of a paper from its thoughts. Call outline_overview(): the sequence of one-line "
+            "thoughts with hashes, word counts, and any '(split recommended: ...)' notes. Recommend only changes that "
+            "clearly improve the argument:\n"
+            "- MOVE a block elsewhere (op 'move', hash, after = the hash it should follow, or null for the very start; "
+            "note = why, 12 words or fewer),\n"
+            "- MERGE blocks that say one thing in several places (op 'merge', hashes in paper order, note). Blocks marked "
+            "'split recommended' are the opposite case: do not merge them, and consider that a block you want to move "
+            "may be better split first,\n"
+            "Be selective: a few strong recommendations, not a rewrite; leave sound order alone. Call record_suggestions "
+            "once with [{op, ...}] (an empty list is a fine answer). Do not edit the paper.")
+
+
 def forget(proj: Project) -> str:
-    """Drop every thought (they are rewritten on the next refresh)."""
+    """Full reclassification: drop every thought, and with them the split recommendations, the model's
+    move/merge suggestions, the flow flags and the dismissals (all of them describe the old thoughts).
+    The draft plan is yours and stays."""
     store = load_store(proj)
     n = len(store["thoughts"])
-    store["thoughts"], store["last"] = {}, []
+    store["thoughts"], store["last"], store["suggestions"], store["flags"] = {}, [], [], []
     save_store(proj, store)
     return f"{n} thought(s) dropped"
 

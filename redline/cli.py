@@ -79,10 +79,11 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("overview", help="high-level overview: one thought per block (nvim: gO)")
     p.add_argument("action", nargs="?", default="show",
-                   choices=["show", "refresh", "flow", "plan-set", "plan-clear", "plan-message", "plan-apply", "edit-message"])
+                   choices=["show", "refresh", "flow", "review", "dismiss", "plan-set", "plan-clear", "plan-message", "plan-apply", "edit-message"])
     p.add_argument("--json", action="store_true")
     p.add_argument("--model", help="refresh/flow: a [models] entry (default: outline_model), or pane")
     p.add_argument("--all", action="store_true", help="refresh: drop every thought and rewrite them all")
+    p.add_argument("--no-review", action="store_true", help="refresh: skip the review pass that follows the thoughts")
     p.add_argument("--op", choices=["merge", "split"], help="edit-message")
     p.add_argument("--hashes", help="edit-message: comma separated block hashes")
     p.add_argument("--instruction", default="", help="edit-message: what you want")
@@ -350,11 +351,14 @@ def _run(a: argparse.Namespace) -> int:
             for n in o["nodes"]:
                 t = n["thought"] or "(no thought)"
                 print("  " * n["depth"] + (f"§ {n['number'] + ' ' if n['number'] else ''}{n['title']}" if n["kind"] == "heading" else
-                                           f"[{n['kind']}] {t}{' ~' if n['stale'] else ''}  ({n['chars']}c {n['words']}w {n['nlines']}l)"))
+                                           f"[{n['kind']}] {t}{' ~' if n['stale'] else ''}{'  ✂ split: ' + ' | '.join(n['split']) if n.get('split') else ''}  ({n['chars']}c {n['words']}w {n['nlines']}l)"))
             print(f"{o['total']} blocks, {o['missing']} without a thought, {o['stale']} stale, {o['flags']} flow flag(s)")
             return 0
         if a.action == "plan-set":
             print(O.set_plan(proj, json.loads(sys.stdin.read())))
+            return 0
+        if a.action == "dismiss":
+            print(O.dismiss(proj, [h for h in (a.hashes or "").split(",") if h]))
             return 0
         if a.action == "plan-clear":
             print(O.set_plan(proj, None))
@@ -370,7 +374,14 @@ def _run(a: argparse.Namespace) -> int:
             return 0
         from .spin import spinning
         with spinning("asking the model" if (a.model or proj.cfg.outline_model) != "pane" else "sending to the agent"):
-            print(OA.refresh(proj, a.model, everything=a.all) if a.action == "refresh" else OA.flow(proj, a.model))
+            if a.action == "refresh":
+                hashes = [h for h in (a.hashes or "").split(",") if h]
+                print(OA.refresh(proj, a.model, everything=a.all, hashes=hashes or None,
+                                 review=False if a.no_review else None))
+            elif a.action == "review":
+                print(OA.suggest(proj, a.model))
+            else:
+                print(OA.flow(proj, a.model))
         return 0
     if a.cmd == "sessions":
         from . import config

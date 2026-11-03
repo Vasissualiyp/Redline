@@ -59,6 +59,11 @@ two_sessions = false
 outline_model = "deepseek"
 # How long a thought may be, in words (the model is told; much longer ones are refused).
 outline_words = 10
+# A block shorter than this many words is never flagged "split recommended", however many ideas it lists.
+outline_split_words = 200
+# When every thought is written, the same cheap model reads them all together and recommends
+# rearrangements and merges (and knows which paragraphs it wanted split). false = only on request.
+outline_review = true
 # Shell command run before pushing (e.g. rsync fresh plots into light/).
 pre_push = ""
 compile_timeout = 600
@@ -143,6 +148,8 @@ class Config:
     two_sessions: bool = False
     outline_model: str = "deepseek"
     outline_words: int = 10
+    outline_split_words: int = 200
+    outline_review: bool = True
     auto_sync_seconds: int = 20
     auto_sync_poll: int = 120
     category: str = ""      # tree path in the `redline full` list, e.g. "Papers/Pop III"
@@ -230,6 +237,10 @@ def load(root: Path | None = None) -> Config:
         cfg.two_sessions = bool(data["two_sessions"])
     if "single_editor" in data:
         cfg.single_editor = bool(data["single_editor"])
+    if "outline_review" in data:
+        cfg.outline_review = bool(data["outline_review"])
+    if "outline_split_words" in data:
+        cfg.outline_split_words = max(60, int(data["outline_split_words"]))
     if "outline_words" in data:
         cfg.outline_words = max(4, int(data["outline_words"]))
     for k in ("auto_sync_seconds", "auto_sync_poll"):

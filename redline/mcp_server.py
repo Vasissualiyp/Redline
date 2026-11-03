@@ -242,7 +242,8 @@ def outline_pending(limit: int = 40) -> str:
 
 @mcp.tool()
 def record_thoughts(items: list[dict[str, Any]], ctx: Context | None = None) -> str:
-    """Store thoughts: items = [{hash, thought}] (hash from outline_pending; thought one sentence, <= 25 words)."""
+    """Store thoughts: items = [{hash, thought, split?}] (hash from outline_pending; thought a short phrase,
+    10 words or fewer; split optional: ["idea 1", "idea 2"] only for long blocks that hold separate substantial ideas)."""
     return _safe(lambda: _outline.record(svc().proj, items, _origin(ctx, None)))
 
 
@@ -250,6 +251,13 @@ def record_thoughts(items: list[dict[str, Any]], ctx: Context | None = None) -> 
 def outline_overview() -> str:
     """The paper as its sequence of thoughts (with hashes), for judging whether the narrative flows."""
     return _safe(lambda: _outline.overview(svc().proj))
+
+
+@mcp.tool()
+def record_suggestions(items: list[dict[str, Any]]) -> str:
+    """Store structural recommendations from the thought sequence: items = [{op: "move", hash, after (hash or
+    null = the start), note}, {op: "merge", hashes: [...], note}]. Replaces your earlier ones; [] is fine."""
+    return _safe(lambda: _outline.record_suggestions(svc().proj, items))
 
 
 @mcp.tool()

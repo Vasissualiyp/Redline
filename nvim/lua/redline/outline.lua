@@ -51,6 +51,13 @@ local function define_highlights()
   hl("RedlineOutlineCut", { fg = "#5c6370", strikethrough = true })
   hl("RedlineOutlineMark", { fg = "#e06c75", bold = true })
   hl("RedlineOutlineFlag", { fg = "#e06c75", italic = true })
+  hl("RedlineOutlineSplit", { fg = "#e5c07b", italic = true }) -- split recommended
+  hl("RedlineOutlineSuggest", { fg = "#56b6c2", italic = true }) -- a move / merge recommended by the model
+  hl("RedlineOutlineEditNew", { fg = "#d19a66", bold = true })   -- pending edits you have not decided on
+  hl("RedlineOutlineEditNote", { fg = "#c678dd", bold = true })  -- %N: waiting for the agent
+  hl("RedlineOutlineEditRej", { fg = "#e06c75", bold = true })   -- marked %X
+  hl("RedlineOutlineEditOk", { fg = "#98c379" })                 -- all marked %Y
+  hl("RedlineOutlineComment", { fg = "#56b6c2", bold = true })   -- comments to read
   hl("RedlineOutlineHeader", { fg = "#abb2bf", bold = true, underline = true })
   hl("RedlineOutlineBlock", { bg = "#3e4451" })
   hl("RedlineOutlineHere", { bg = "#2c313c", bold = true }) -- the block the paper's cursor is in
@@ -168,17 +175,45 @@ end
 
 local function fmt(n) return tostring(n):reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "") end
 
--- fixed columns before the thought: lines, words, chars (right-aligned, so sizes line up)
-local PRE_FMT = "%4s %5s %7s │ "
-local PRE = #(PRE_FMT:format("", "", "")) -- bytes; "│" is 3 bytes
-local function columns(n)
-  if S.hide_counts then return "" end
-  return PRE_FMT:format(fmt(n.nlines or 0), fmt(n.words or 0), fmt(n.chars or 0))
+-- fixed columns before the thought: lines, words, chars (right-aligned, so sizes line up), then a review
+-- gutter: ✎N pending edits (orange: some are undecided; magenta: waiting on the agent (%N); red: %X;
+-- green: all %Y), ✉N comments (cyan)
+local CNT_FMT = "%4s %5s %7s "
+local GUT_W = 7
+local function pad_to(str, w)
+  return str .. (" "):rep(math.max(0, w - vim.fn.strdisplaywidth(str)))
 end
-local function pre() return S.hide_counts and 0 or PRE end -- bytes of the l/w/c columns right now
-local function pre_width() return S.hide_counts and 0 or PRE - 2 end -- screen columns ("│" is 1 wide, 3 bytes)
 
+local function gutter(n)
+  local r = n.review or {}
+  local text, spans = "", {}
+  if (r.edits or 0) > 0 then
+    local group = (r.unrated or 0) > 0 and "RedlineOutlineEditNew" or (r.noted or 0) > 0 and "RedlineOutlineEditNote"
+      or (r.rejected or 0) > 0 and "RedlineOutlineEditRej" or "RedlineOutlineEditOk"
+    local piece = "✎" .. r.edits
+    table.insert(spans, { #text, #text + #piece, group })
+    text = text .. piece
+  end
+  if (r.comments or 0) > 0 then
+    local piece = (text ~= "" and " " or "") .. "✉" .. r.comments
+    table.insert(spans, { #text + (text ~= "" and 1 or 0), #text + #piece, "RedlineOutlineComment" })
+    text = text .. piece
+  end
+  return pad_to(text, GUT_W), spans
+end
 
+--- The text before the thought and the highlight spans inside it (byte offsets).
+local function columns(n)
+  local counts = S.hide_counts and "" or CNT_FMT:format(fmt(n.nlines or 0), fmt(n.words or 0), fmt(n.chars or 0))
+  local g, spans = gutter(n)
+  for _, sp in ipairs(spans) do sp[1], sp[2] = sp[1] + #counts, sp[2] + #counts end
+  table.insert(spans, 1, { 0, #counts, "RedlineOutlineCounts" })
+  return counts .. g .. "│ ", spans
+end
+local function pre_width() return (S.hide_counts and 0 or 19) + GUT_W + 2 end -- screen columns of the prefix
+local function head_cols()
+  return (S.hide_counts and "" or CNT_FMT:format("l", "w", "c")) .. pad_to("✎ ✉", GUT_W) .. "│ "
+end
 
 local function render()
   if not (S.buf and vim.api.nvim_buf_is_valid(S.buf)) then return end
@@ -192,11 +227,13 @@ local function render()
   local lines, marks = {}, {}
   S.lines = {}
   local d = S.data or { total = 0, stale = 0, missing = 0, flags = 0 }
-  local head = (" Overview  %d blocks · %d stale · %d without thought · %d flags"):format(d.total, d.stale, d.missing, d.flags)
+  local head = (" Overview  %d blocks · %d stale · %d without thought"):format(d.total, d.stale, d.missing)
+  head = head .. (" · %d to review · %d ✂ · %d ideas · %d flags"):format(d.to_review or 0, d.splits or 0, d.suggestions or 0, d.flags)
   if S.plan then head = head .. ("  · PLAN: %d moved, %d deleted (gA applies, gr discards)"):format(nmoved, ndel) end
   if S.busy then head = head .. "  · " .. S.busy end
   table.insert(lines, head)
-  table.insert(lines, (S.hide_counts and "" or PRE_FMT:format("l", "w", "c")) .. "? keys · dd p move · dd delete · :w commit · gA apply plan · gc l/w/c")
+  local hc = head_cols()
+  table.insert(lines, hc .. "? keys · dd p move · dd delete · :w commit · gA apply plan")
   for _, v in ipairs(vis) do
     local n = v.n
     local pad = ("  "):rep(math.max(n.depth, 0))
@@ -213,21 +250,40 @@ local function render()
       text = "∅ " .. (n.text or ""):sub(1, 90)
       group = "RedlineOutlineMissing"
     end
-    local tag = (n.stale and "~" or "") .. (S.plan and moved[n.hash] and "⇅" or "") .. (S.marks[n.hash] and "◆" or "")
+    local tag = (n.split and #n.split >= 2 and "✂" or "") .. (n.stale and "~" or "") .. (S.plan and moved[n.hash] and "⇅" or "") .. (S.marks[n.hash] and "◆" or "")
     local id = "‹" .. n.hash .. "›"
     -- the id goes LAST: concealed text still counts when nvim wraps, and 16 hidden columns at the
     -- start of every line made all of them wrap that much too early
-    local body = columns(n) .. ("%s%s%s%s %s"):format(pad, fold, ICON[n.kind] or "?", tag ~= "" and tag or "", text)
+    local cols, spans = columns(n)
+    local body = cols .. ("%s%s%s%s %s"):format(pad, fold, ICON[n.kind] or "?", tag ~= "" and tag or "", text)
     local line = body .. id
     table.insert(lines, line)
     local row = #lines - 1
     S.lines[row] = v
     table.insert(marks, { row, #body, #line, nil, { conceal = true } })
-    table.insert(marks, { row, 0, pre(), "RedlineOutlineCounts" })
-    local icon_from = pre() + #pad + #fold
+    for _, sp in ipairs(spans) do table.insert(marks, { row, sp[1], sp[2], sp[3] }) end
+    local icon_from = #cols + #pad + #fold
     table.insert(marks, { row, icon_from, #body, group })
     if (S.plan and moved[n.hash]) or S.marks[n.hash] then
       table.insert(marks, { row, icon_from, icon_from + #ICON[n.kind] + #tag, S.marks[n.hash] and "RedlineOutlineMark" or "RedlineOutlineMoved" })
+    end
+    if n.split and #n.split >= 2 then
+      table.insert(marks, { row, -1, -1, nil, { virt = (" "):rep(pre_width()) .. ("%s    ✂ split recommended: %s"):format(pad, table.concat(n.split, " | ")), group = "RedlineOutlineSplit" } })
+    end
+    for _, sg in ipairs(n.suggestions or {}) do
+      local by = by_hash()
+      local txt
+      if sg.op == "move" then
+        local tgt = sg.after and by[sg.after]
+        txt = ("⇢ move %s: %s"):format(tgt and ("after «" .. ((tgt.thought or tgt.title or tgt.text or ""):sub(1, 40)) .. "»") or "to the start", sg.note or "")
+      else
+        local others = {}
+        for _, h in ipairs(sg.hashes) do
+          if h ~= n.hash and by[h] then table.insert(others, "«" .. ((by[h].thought or by[h].text or ""):sub(1, 30)) .. "»") end
+        end
+        txt = ("⇢ merge with %s: %s"):format(table.concat(others, ", "), sg.note or "")
+      end
+      table.insert(marks, { row, -1, -1, nil, { virt = (" "):rep(pre_width()) .. ("%s    %s  (ga accept, gd dismiss)"):format(pad, txt), group = "RedlineOutlineSuggest" } })
     end
     for _, f in ipairs(n.flags or {}) do
       local label = FLAG_ICON[f.kind == "repeat" and "repeat_" or f.kind] or "⚑"
@@ -241,9 +297,7 @@ local function render()
   vim.api.nvim_buf_clear_namespace(S.buf, ns, 0, -1)
   vim.api.nvim_buf_set_extmark(S.buf, ns, 0, 0, { end_col = #lines[1], hl_group = "RedlineOutlineHeader" })
   vim.api.nvim_buf_set_extmark(S.buf, ns, 1, 0, { end_col = #lines[2], hl_group = "RedlineOutlineCounts" })
-  if pre() > 0 then
-    vim.api.nvim_buf_set_extmark(S.buf, ns, 1, 0, { end_col = pre(), hl_group = "RedlineOutlineHeader" })
-  end
+  vim.api.nvim_buf_set_extmark(S.buf, ns, 1, 0, { end_col = #hc, hl_group = "RedlineOutlineHeader" })
   local virt = {}
   for _, m in ipairs(marks) do
     local extra = m[5]
@@ -251,7 +305,7 @@ local function render()
       vim.api.nvim_buf_set_extmark(S.buf, ns, m[1], m[2], { end_col = m[3], conceal = "" })
     elseif extra and extra.virt then
       virt[m[1]] = virt[m[1]] or {}
-      table.insert(virt[m[1]], { { extra.virt, "RedlineOutlineFlag" } })
+      table.insert(virt[m[1]], { { extra.virt, extra.group or "RedlineOutlineFlag" } })
     elseif m[4] then
       vim.api.nvim_buf_set_extmark(S.buf, ns, m[1], m[2], { end_col = m[3], hl_group = m[4] })
     end
@@ -522,8 +576,14 @@ local function edit_task(op)
     if not v or v.n.kind == "heading" then return vim.notify("redline overview: put the cursor on the block to split") end
     hashes = { v.n.hash }
   end
+  local default
+  if op == "split" then
+    local v = cur_vis()
+    local sp = v and v.n.split
+    if sp and #sp >= 2 then default = "split into: " .. table.concat(sp, " | ") end
+  end
   vim.ui.input({ prompt = (op == "merge" and ("Merge %d thoughts: "):format(#hashes) or "Split this thought: ")
-    .. "(what should come out? empty = your call) " }, function(instr)
+    .. "(what should come out? empty = your call) ", default = default }, function(instr)
     if instr == nil then return end
     run(("overview edit-message --op %s --hashes %s --instruction %s"):format(op, table.concat(hashes, ","),
       vim.fn.shellescape(instr)), nil, function(r)
@@ -536,12 +596,14 @@ local function edit_task(op)
   end)
 end
 
-local function model_task(action, model, everything)
+local function model_task(action, model, everything, hashes)
   if S.busy then return vim.notify("redline overview: busy (" .. S.busy .. ")") end
-  local label = action == "flow" and "checking the flow" or "writing thoughts"
+  local label = (action == "flow" and "checking the flow") or (action == "review" and "reviewing the structure")
+    or "writing thoughts"
   busy("⠿ " .. label)
   local stop = require("redline.spinner").start(label)
-  run("overview " .. action .. (model and (" --model " .. model) or "") .. (everything and " --all" or ""), nil, function(r)
+  run("overview " .. action .. (model and (" --model " .. model) or "") .. (everything and " --all" or "")
+    .. (hashes and (" --hashes " .. table.concat(hashes, ",") .. " --no-review") or ""), nil, function(r)
     stop()
     busy(nil)
     local out = ((r.stdout or "") .. (r.stderr or "")):gsub("%s+$", "")
@@ -550,20 +612,134 @@ local function model_task(action, model, everything)
   end)
 end
 
-local function next_flag(step)
+local function next_where(pred, step, what)
   local list = nodes()
   local v = cur_vis()
   local i = v and v.i or 0
   for _ = 1, #list do
     i = (i - 1 + step) % #list + 1
-    if list[i].flags and #list[i].flags > 0 then
+    if pred(list[i]) then
       S.collapsed = {}
       render()
       cursor_to_hash(list[i].hash)
       return
     end
   end
-  vim.notify("redline overview: no flow flags (f runs the check)")
+  vim.notify("redline overview: " .. what)
+end
+
+local function next_flag(step)
+  next_where(function(n) return n.flags and #n.flags > 0 end, step, "no flow flags (gF runs the check)")
+end
+
+local function next_split(step)
+  next_where(function(n) return n.split and #n.split >= 2 end, step, "no split recommendations")
+end
+
+-- ---- recommendations: split, move, merge ---------------------------------------------
+local function dismiss_here()
+  local v = cur_vis()
+  if not v then return end
+  local n = by_hash()[v.n.hash] or v.n
+  if not ((n.split and #n.split >= 2) or (n.suggestions and #n.suggestions > 0)) then
+    return vim.notify("redline overview: nothing recommended here")
+  end
+  run("overview dismiss --hashes " .. n.hash, nil, function(r)
+    vim.notify("redline overview: " .. vim.trim((r.stdout or "") .. (r.stderr or "")) .. " (they return only if the block is re-run: gR)")
+    fetch()
+  end)
+end
+
+--- Move the block (with its subtree) after another block in the draft plan.
+local function plan_move(hash, after)
+  local list = S.plan or vim.deepcopy(S.data.nodes)
+  local ci, ti
+  for i, n in ipairs(list) do
+    if n.hash == hash then ci = i end
+  end
+  if not ci then return false end
+  local a, b = ci, ci
+  while list[b + 1] and list[b + 1].depth > list[ci].depth and (list[ci].kind == "heading" or list[ci].kind == "list") do b = b + 1 end
+  local chunk = {}
+  for k = a, b do table.insert(chunk, list[k]) end
+  for _ = a, b do table.remove(list, a) end
+  if after then
+    for i, n in ipairs(list) do if n.hash == after then ti = i end end
+    if not ti then return false end
+    while list[ti + 1] and list[ti + 1].depth > list[ti].depth and (list[ti].kind == "heading" or list[ti].kind == "list") do ti = ti + 1 end
+  else
+    ti = 0
+  end
+  for k, x in ipairs(chunk) do table.insert(list, ti + k, x) end
+  recompute_depths(list)
+  S.plan = list
+  return true
+end
+
+local function accept_suggestion()
+  local v = cur_vis()
+  if not v then return end
+  local n = by_hash()[v.n.hash] or v.n
+  local sg = n.suggestions and n.suggestions[1]
+  if not sg then return vim.notify("redline overview: no move / merge recommended here") end
+  if sg.op == "move" then
+    if not plan_move(n.hash, sg.after) then return vim.notify("redline overview: the target is gone; gr reloads", vim.log.levels.WARN) end
+    redraw_keep()
+    cursor_to_hash(n.hash)
+    vim.notify("redline overview: move added to the draft plan (gA applies the plan)")
+  else
+    S.marks = {}
+    for _, h in ipairs(sg.hashes) do S.marks[h] = true end
+    redraw_keep()
+    vim.notify("redline overview: blocks marked for merging; gm asks the agent")
+  end
+  run("overview dismiss --hashes " .. n.hash, nil, function() fetch() end) -- taken: it is not a recommendation any more
+end
+
+--- A confirmation screen: a float with the consequences spelled out; y / <CR> go, n / q / <Esc> stay.
+local function confirm_screen(title, lines, on_yes)
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.bo[buf].bufhidden = "wipe"
+  local all = { "" }
+  for _, l in ipairs(lines) do table.insert(all, "  " .. l) end
+  table.insert(all, "")
+  table.insert(all, "  [y] yes, do it      [n] cancel")
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, all)
+  vim.bo[buf].modifiable = false
+  local width = 78
+  for _, l in ipairs(all) do width = math.max(width, vim.fn.strdisplaywidth(l) + 4) end
+  width = math.min(width, vim.o.columns - 4)
+  local win = vim.api.nvim_open_win(buf, true, { relative = "editor", row = math.max(2, math.floor((vim.o.lines - #all) / 2) - 2),
+    col = math.floor((vim.o.columns - width) / 2), width = width, height = #all, border = "rounded", style = "minimal",
+    title = " " .. title .. " ", title_pos = "center" })
+  vim.api.nvim_buf_add_highlight(buf, -1, "RedlineOutlineEditNew", #all - 1, 0, -1)
+  local function close() if vim.api.nvim_win_is_valid(win) then vim.api.nvim_win_close(win, true) end end
+  for _, k in ipairs({ "n", "q", "<Esc>" }) do vim.keymap.set("n", k, close, { buffer = buf, nowait = true }) end
+  for _, k in ipairs({ "y", "<CR>" }) do
+    vim.keymap.set("n", k, function() close(); on_yes() end, { buffer = buf, nowait = true })
+  end
+end
+
+local function reclassify_all()
+  local d = S.data or {}
+  local batches = math.max(1, math.ceil((d.total or 0) / 40))
+  confirm_screen("Reclassify the WHOLE overview?", {
+    ("Every one of the %d blocks goes through %s again (about %d batches of 40)."):format(d.total or 0, d.model ~= "" and d.model or "the model", batches),
+    "",
+    "Dropped, because they describe the old thoughts:",
+    ("  • %d thoughts   • %d split recommendations   • %d move / merge ideas"):format(d.thoughts or 0, d.splits or 0, d.suggestions or 0),
+    ("  • %d flow flags   • %d dismissals (dismissed ideas may come back)"):format(d.flags or 0, d.dismissed or 0),
+    "",
+    d.review_after and "Afterwards the structure review runs again (moves and merges)." or "The structure review does not run by itself (gv does it).",
+    "Kept: your draft plan, your marks, the paper (this only writes thoughts).",
+    "Use it after changing how thoughts are written (the instructions, outline_words, the model).",
+  }, function() model_task("refresh", nil, true) end)
+end
+
+local function rerun_block()
+  local v = cur_vis()
+  if not v or v.n.kind == "heading" then return vim.notify("redline overview: put the cursor on a block") end
+  model_task("refresh", nil, false, { v.n.hash })
 end
 
 -- ---- folds ---------------------------------------------------------------------------
@@ -610,7 +786,14 @@ local function help()
         { key = "j k 12j gg G H M L <C-d>", mode = "n", desc = "all the usual motions" },
         { key = "<CR>", mode = "n", desc = "go to the block in the paper (the PDF highlights the whole block while you move)" },
         { key = "za zo zc zM zR <Tab>", mode = "n", desc = "fold / unfold; a folded section moves or goes as a whole" },
-        { key = "]f [f", mode = "n", desc = "next / previous flow flag" } } },
+        { key = "]f [f", mode = "n", desc = "next / previous flow flag" },
+        { key = "]s [s", mode = "n", desc = "next / previous ✂ split recommendation (long block, separate substantial ideas)" } } },
+      { name = "Verify", hl = "Verify", title = "Recommendations from the model (split ✂, move / merge ⇢)", entries = {
+        { key = "gv", mode = "n", desc = "review the whole sequence of thoughts: recommend moves and merges (also runs after the thoughts)" },
+        { key = "ga", mode = "n", desc = "accept the recommendation here: a move goes into the draft plan, a merge marks the blocks" },
+        { key = "gd", mode = "n", desc = "dismiss them: they stay away until the block is re-run (gR)" },
+        { key = "gR", mode = "n", desc = "run this block through the model again (new thought, new recommendation)" },
+        { key = "]s [s", mode = "n", desc = "next / previous ✂ split recommendation" } } },
       { name = "Agent", hl = "Agent", title = "Merge and split with the agent", entries = {
         { key = "m", mode = "n", desc = "mark / unmark the block for merging" },
         { key = "gm", mode = "n", desc = "merge the marked blocks (or this one and the next) into one paragraph" },
@@ -618,7 +801,7 @@ local function help()
       { name = "Build", hl = "Build", title = "Thoughts and flow", entries = {
         { key = "gt", mode = "n", desc = "write missing / stale thoughts with the outline_model (cheap model, headless)" },
         { key = "gT", mode = "n", desc = "same, through the paper's agent pane" },
-        { key = "gW", mode = "n", desc = "rewrite EVERY thought (e.g. after changing outline_words)" },
+        { key = "gW gC", mode = "n", desc = "FORCE A FULL RECLASSIFICATION (asks first): every block again, recommendations reset" },
         { key = "gF", mode = "n", desc = "flow check: the model flags gaps, repeats, forward references ..." } } },
       { name = "Session", hl = "Session", title = "Window", entries = {
         { key = "gc", mode = "n", desc = "show / hide the l w c (lines, words, chars) columns" },
@@ -626,7 +809,7 @@ local function help()
         { key = "g> g< g|", mode = "n", desc = "wider / narrower sidebar / toggle a wide one (also <C-w>< <C-w>> or the mouse)" },
         { key = "q", mode = "n", desc = "close (asks if the lines were edited but not committed)" } } },
     },
-    notes = { "~ stale thought   ∅ no thought yet   ⇅ moved in the plan   ◆ marked.  The end of every line holds a hidden id (‹...›): do not edit it." },
+    notes = { "✎N pending edits (orange: undecided, magenta: %N waiting on the agent, red: %X, green: all %Y)   ✉N comments", "~ stale thought   ∅ no thought yet   ⇅ moved in the plan   ◆ marked   ✂ split recommended.  The end of every line holds a hidden id (‹...›): do not edit it." },
   })
 end
 
@@ -681,12 +864,17 @@ local function setup_buffer()
   map("gs", function() edit_task("split") end, "split")
   map("gt", function() model_task("refresh") end, "thoughts")
   map("gT", function() model_task("refresh", "pane") end, "thoughts via the agent pane")
-  map("gW", function()
-    if vim.fn.confirm("Rewrite EVERY thought (the current ones are dropped)?", "&Yes\n&No", 2) == 1 then model_task("refresh", nil, true) end
-  end, "rewrite every thought")
+  map("gW", reclassify_all, "force a full reclassification")
+  map("gC", reclassify_all, "force a full reclassification")
   map("gF", function() model_task("flow") end, "flow check")
+  map("gv", function() model_task("review") end, "review the structure: moves and merges")
+  map("gR", rerun_block, "run this block through the model again")
+  map("gd", dismiss_here, "dismiss the recommendations here")
+  map("ga", accept_suggestion, "accept the recommended move / merge")
   map("]f", function() next_flag(1) end, "next flag")
   map("[f", function() next_flag(-1) end, "previous flag")
+  map("]s", function() next_split(1) end, "next split recommendation")
+  map("[s", function() next_split(-1) end, "previous split recommendation")
   map("gc", function()
     S.hide_counts = not S.hide_counts or nil
     M.set_showbreak()
@@ -732,7 +920,7 @@ end
 
 function M.set_showbreak()
   if M.is_open() then -- wrapped thoughts stay under the thought column
-    vim.wo[S.win].showbreak = S.hide_counts and "" or ((" "):rep(PRE - 4) .. "│ ")
+    vim.wo[S.win].showbreak = (" "):rep(pre_width() - 2) .. "│ "
   end
 end
 

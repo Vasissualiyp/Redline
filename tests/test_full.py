@@ -985,3 +985,112 @@ Echo paragraph opens the second section with a different topic here.
 """)
     nums = [(n["number"], n["title"]) for n in outline.build(Project.open(d))["nodes"] if n["kind"] == "heading"]
     assert nums == [("1", "One"), ("1.1", "Sub"), ("1.1.1", "Deep"), ("", "Starred"), ("2", "Two")]
+
+
+def test_split_recommended_only_for_long_blocks_with_separate_ideas(home):
+    from redline import outline
+    from redline.state import Project
+    d = make_paper(home)
+    long = " ".join(["Panel A shows the density"] * 40)   # ~200 words
+    short = "Panel A shows the density and panel B the temperature of the gas."
+    (d / "main.tex").write_text("\\documentclass{article}\n\\begin{document}\n\\section{S}\n" + long + "\n\n" + short + "\n\\end{document}\n")
+    proj = Project.open(d)
+    nodes = [n for n in outline.build(proj)["nodes"] if n["kind"] == "paragraph"]
+    big, small = nodes
+    assert big["words"] >= 200 > small["words"] and "SPLIT RECOMMENDED" in outline.pending(proj)
+    msg = outline.record(proj, [
+        {"hash": big["hash"], "thought": "Two panels described", "split": ["Panel A density", "Panel B temperature"]},
+        {"hash": small["hash"], "thought": "Both panels in brief", "split": ["panel A", "panel B"]}])
+    assert "split ignored for 1 block" in msg                       # the 12-word paragraph is fine as it is
+    o = {n["hash"]: n for n in outline.build(proj)["nodes"]}
+    assert o[big["hash"]]["split"] == ["Panel A density", "Panel B temperature"] and o[small["hash"]]["split"] is None
+    assert "split recommended" in outline.overview(proj)
+    assert "suggested split into: Panel A density | Panel B temperature" in outline.edit_message(proj, "split", [big["hash"]])
+    # one idea is never a split, whatever the length; a stale thought drops the recommendation
+    outline.record(proj, [{"hash": big["hash"], "thought": "One idea", "split": ["only one"]}])
+    assert outline.build(proj)["nodes"][1]["split"] is None
+    outline.record(proj, [{"hash": big["hash"], "thought": "Two panels", "split": "A | B"}])
+    (d / "main.tex").write_text((d / "main.tex").read_text().replace("Panel A shows the density Panel A", "Changed wording. Panel A", 1))
+    changed = [n for n in outline.build(proj)["nodes"] if n["kind"] == "paragraph"][0]
+    assert changed["stale"] and changed["split"] is None
+
+
+def test_split_dismissal_suggestions_and_rerun(home):
+    from redline import outline
+    from redline.state import Project
+    d = make_paper(home)
+    long = " ".join(["Panel A shows the density"] * 40)
+    (d / "main.tex").write_text("\\documentclass{article}\n\\begin{document}\n\\section{S}\n" + long + "\n\nSecond block says something quite different here today.\n\nThird block closes the argument with a summary of it.\n\\end{document}\n")
+    proj = Project.open(d)
+    a, b, c = [n["hash"] for n in outline.build(proj)["nodes"] if n["kind"] == "paragraph"]
+    outline.record(proj, [{"hash": a, "thought": "Two panels", "split": ["A", "B"]}, {"hash": b, "thought": "Different topic"},
+                          {"hash": c, "thought": "Conclusion"}])
+    assert outline.build(proj)["splits"] == 1
+    # dismissed: gone, and it stays gone
+    assert outline.dismiss(proj, [a]) == "dismissed 1 recommendation(s)"
+    assert outline.build(proj)["splits"] == 0 and outline.build(proj)["nodes"][1]["split"] is None
+    assert "split recommended" not in outline.overview(proj)
+    # ... until the block is run through the model again
+    outline.forget_blocks(proj, [a])
+    assert outline.build(proj)["missing"] == 1
+    outline.record(proj, [{"hash": a, "thought": "Two panels again", "split": ["A", "B"]}])
+    assert outline.build(proj)["splits"] == 1
+    # the review pass: moves and merges, validated against the paper; a dismissed one stays away
+    msg = outline.record_suggestions(proj, [
+        {"op": "move", "hash": c, "after": None, "note": "conclusion belongs first"},
+        {"op": "merge", "hashes": [b, a], "note": "same topic"},
+        {"op": "move", "hash": "nope", "after": a, "note": "x"}, {"op": "delete", "hash": a}])
+    assert msg.startswith("recorded 2 suggestion(s)") and "invalid ignored" in msg
+    o = outline.build(proj)
+    assert o["suggestions"] == 2
+    by = {n["hash"]: n for n in o["nodes"]}
+    assert by[c]["suggestions"][0]["op"] == "move" and by[a]["suggestions"][0]["hashes"] == [a, b]  # paper order
+    assert "knows the splits" or "split recommended: A | B" in outline.overview(proj)
+    outline.dismiss(proj, [c])
+    assert outline.build(proj)["suggestions"] == 1
+    assert "'split recommended" in outline.review_task(proj)
+    # a stale thought keeps its (old) text but loses its recommendations: carry works for long blocks too
+    (d / "main.tex").write_text((d / "main.tex").read_text().replace("Panel A shows the density Panel A", "Changed wording. Panel A", 1))
+    changed = [n for n in outline.build(proj)["nodes"] if n["kind"] == "paragraph"][0]
+    assert changed["stale"] and changed["thought"] == "Two panels again" and changed["split"] is None
+
+
+def test_blocks_know_what_waits_for_review(home):
+    from redline import outline
+    from redline.state import Project
+    d = make_paper(home)
+    (d / "main.tex").write_text(
+        "\\documentclass{article}\n\\begin{document}\n\\section{S}\n"
+        "First paragraph has \\added{a new bit} and \\deleted{an old bit} here today.\n\n"
+        "Second paragraph \\replaced{better}{worse} text %Y with enough words around it.\n\n"
+        "Third paragraph carries \\skcomment{a coauthor question} only a comment and words.\n\n"
+        "Fourth paragraph is clean and has no markup at all in it whatsoever.\n\\end{document}\n")
+    nodes = [n for n in outline.build(Project.open(d))["nodes"] if n["kind"] == "paragraph"]
+    r = [n["review"] for n in nodes]
+    assert (r[0]["edits"], r[0]["unrated"], r[0]["comments"]) == (2, 2, 0)
+    assert (r[1]["edits"], r[1]["accepted"], r[1]["unrated"]) == (1, 1, 0)
+    assert (r[2]["edits"], r[2]["comments"]) == (0, 1)
+    assert not any(r[3].values())
+    sec = next(n for n in outline.build(Project.open(d))["nodes"] if n["kind"] == "heading")["review"]
+    assert sec["edits"] == 3 and sec["comments"] == 1                 # a section sums its blocks
+    assert outline.build(Project.open(d))["to_review"] == 3
+
+
+def test_full_reclassification_resets_everything_that_depends_on_thoughts(home):
+    from redline import outline
+    from redline.state import Project
+    d = make_paper(home)
+    (d / "main.tex").write_text(PLAN_TEX)
+    proj = Project.open(d)
+    h = [n["hash"] for n in outline.build(proj)["nodes"] if n["kind"] == "paragraph"]
+    outline.record(proj, [{"hash": x, "thought": f"t{i}"} for i, x in enumerate(h)])
+    outline.record_suggestions(proj, [{"op": "move", "hash": h[0], "after": h[3], "note": "x"}])
+    outline.record_flow(proj, [{"hash": h[1], "kind": "gap", "note": "g"}])
+    outline.dismiss(proj, [h[0]])
+    outline.set_plan(proj, {"order": list(reversed(h)), "deleted": []})
+    o = outline.build(proj)
+    assert (o["thoughts"], o["suggestions"], o["flags"], o["dismissed"], o["model"]) == (5, 0, 1, 1, "deepseek")
+    outline.forget(proj)
+    o = outline.build(proj)
+    assert (o["thoughts"], o["missing"], o["suggestions"], o["flags"], o["dismissed"]) == (0, 5, 0, 0, 0)
+    assert outline.load_store(proj)["plan"] is not None          # your draft plan is not touched
