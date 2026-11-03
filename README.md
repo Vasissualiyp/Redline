@@ -511,8 +511,7 @@ and the confirmation says how many were skipped.
 ## High-level overview (`gO`)
 
 `gO` in review mode (`:Redline overview [tab]`) opens the paper as a tree of one-line **thoughts**: sections, then one
-node per paragraph (¶), figure (▣), table (▦), list (≡) with its items (•), equation (∑) and the abstract (A). Each shows its
-thought and, dimmed, its counts (`1,232c 162w 20l`; sections show their total words). It sits in a sidebar by default; `s`
+node per paragraph (¶), figure (▣), table (▦), list (≡) with its items (•), equation (∑) and the abstract (A). Each row has fixed columns first, **l w c** (lines, words, chars, right-aligned so sizes line up; a section shows its totals), then the thought. It sits in a sidebar by default; `s`
 toggles a full tab. Moving the cursor scrolls the paper to the block, highlights it there and **highlights the whole block
 in the PDF pane**.
 

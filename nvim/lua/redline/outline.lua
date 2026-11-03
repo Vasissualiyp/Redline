@@ -166,9 +166,11 @@ end
 
 local function fmt(n) return tostring(n):reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "") end
 
-local function counts(n)
-  if n.kind == "heading" then return ("%sw"):format(fmt(n.words)) end
-  return ("%sc %sw %dl"):format(fmt(n.chars), fmt(n.words), n.nlines)
+-- fixed columns before the thought: lines, words, chars (right-aligned, so sizes line up)
+local PRE_FMT = "%4s %5s %7s │ "
+local PRE = #(PRE_FMT:format("", "", "")) -- bytes; "│" is 3 bytes
+local function columns(n)
+  return PRE_FMT:format(fmt(n.nlines or 0), fmt(n.words or 0), fmt(n.chars or 0))
 end
 
 local function render()
@@ -183,7 +185,7 @@ local function render()
   if S.plan then head = head .. ("  · PLAN: %d moved"):format(nmoved or 0) end
   if S.busy then head = head .. "  · " .. S.busy end
   table.insert(lines, head)
-  table.insert(lines, " ? keys   r thoughts   f flow   J/K x p move   A apply plan   M merge   S split")
+  table.insert(lines, PRE_FMT:format("l", "w", "c") .. "? keys · r thoughts · f flow · J K x p plan · A apply")
   for _, v in ipairs(vis) do
     local n = v.n
     local pad = ("  "):rep(math.max(n.depth, 0))
@@ -202,20 +204,20 @@ local function render()
     end
     local tag = (n.stale and "~" or "") .. (S.plan and S.touched[n.hash] and "⇅" or "") .. (S.marks[n.hash] and "◆" or "")
       .. (S.cut == n.hash and "✂" or "")
-    local line = ("%s%s%s%s %s"):format(pad, fold, ICON[n.kind] or "?", tag ~= "" and tag or "", text)
+    local line = columns(n) .. ("%s%s%s%s %s"):format(pad, fold, ICON[n.kind] or "?", tag ~= "" and tag or "", text)
     table.insert(lines, line)
     local row = #lines - 1
     S.lines[row] = v
-    local icon_from = #pad + #fold
+    table.insert(marks, { row, 0, PRE, "RedlineOutlineCounts" })
+    local icon_from = PRE + #pad + #fold
     table.insert(marks, { row, icon_from, #line, S.cut == n.hash and "RedlineOutlineCut" or group })
     if (S.plan and S.touched[n.hash]) or S.marks[n.hash] then
       table.insert(marks, { row, icon_from, icon_from + #ICON[n.kind] + #tag, S.marks[n.hash] and "RedlineOutlineMark" or "RedlineOutlineMoved" })
     end
     for _, f in ipairs(n.flags or {}) do
       local label = FLAG_ICON[f.kind == "repeat" and "repeat_" or f.kind] or "⚑"
-      table.insert(marks, { row, -1, -1, nil, { virt = ("%s    %s: %s"):format(pad, label, f.note) } })
+      table.insert(marks, { row, -1, -1, nil, { virt = (" "):rep(PRE - 2) .. ("%s    %s: %s"):format(pad, label, f.note) } })
     end
-    table.insert(marks, { row, -1, -1, nil, { counts = counts(n) } })
   end
   vim.bo[S.buf].modifiable = true
   vim.api.nvim_buf_set_lines(S.buf, 0, -1, false, lines)
@@ -223,13 +225,11 @@ local function render()
   vim.api.nvim_buf_clear_namespace(S.buf, ns, 0, -1)
   vim.api.nvim_buf_set_extmark(S.buf, ns, 0, 0, { end_col = #lines[1], hl_group = "RedlineOutlineHeader" })
   vim.api.nvim_buf_set_extmark(S.buf, ns, 1, 0, { end_col = #lines[2], hl_group = "RedlineOutlineCounts" })
+  vim.api.nvim_buf_set_extmark(S.buf, ns, 1, 0, { end_col = PRE, hl_group = "RedlineOutlineHeader" })
   local virt = {}
   for _, m in ipairs(marks) do
     local extra = m[5]
-    if extra and extra.counts then
-      vim.api.nvim_buf_set_extmark(S.buf, ns, m[1], 0, { virt_text = { { "  " .. extra.counts, "RedlineOutlineCounts" } },
-        virt_text_pos = "inline" })
-    elseif extra and extra.virt then
+    if extra and extra.virt then
       virt[m[1]] = virt[m[1]] or {}
       table.insert(virt[m[1]], { { extra.virt, "RedlineOutlineFlag" } })
     elseif m[4] then
@@ -549,7 +549,7 @@ local function help()
   require("redline.help").open({
     groups = {
       { name = "Move", hl = "Move", title = "Move and fold", entries = {
-        { key = "j k", mode = "n", desc = "move (the paper and the PDF follow: the whole block is highlighted)" },
+        { key = "j k", mode = "n", desc = "move (the paper and the PDF follow: the whole block is highlighted); columns l w c = lines, words, chars" },
         { key = "<CR> o", mode = "n", desc = "go to the block in the paper" },
         { key = "h l za", mode = "n", desc = "fold: h closes / goes to the parent, l opens, za toggles" },
         { key = "zM zR", mode = "n", desc = "close all sections / open all" },
@@ -665,7 +665,7 @@ local function open_window()
     cursorline = true, signcolumn = "no", foldcolumn = "0", winfixwidth = S.mode == "side", list = false }) do
     vim.wo[S.win][k] = v
   end
-  vim.wo[S.win].showbreak = "      "
+  vim.wo[S.win].showbreak = (" "):rep(PRE - 4) .. "│ " -- wrapped thoughts stay under the thought column
 end
 
 function M.is_open() return S.win ~= nil and vim.api.nvim_win_is_valid(S.win) end

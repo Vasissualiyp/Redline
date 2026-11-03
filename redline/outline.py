@@ -299,6 +299,16 @@ def _carry(old: list[dict], new: list[Block], thoughts: dict) -> dict[int, dict]
     return carried
 
 
+def _span(nodes: list[dict], k: int) -> int:
+    """How many nodes follow heading k inside its section (subsections included)."""
+    n = 0
+    for m in nodes[k + 1:]:
+        if m["kind"] == "heading" and m["depth"] <= nodes[k]["depth"]:
+            break
+        n += 1
+    return n
+
+
 def build(proj: Project, doc: Document | None = None) -> dict:
     """The overview: {nodes: [...flat, in order...], stale, missing, total, flags, plan}."""
     doc = doc or proj.doc()
@@ -336,6 +346,7 @@ def build(proj: Project, doc: Document | None = None) -> dict:
                     tot_c += m["chars"]
                     tot_w += m["words"]
             n["chars"], n["words"] = tot_c, tot_w
+            n["nlines"] = sum(m["nlines"] for m in nodes[k + 1:k + 1 + _span(nodes, k)] if m["kind"] not in ("heading", "item"))
     saved_last = [{"hash": b.hash, "kind": b.kind, "head": b.text[:200]} for b in bl]
     if [x["hash"] for x in store["last"]] != [x["hash"] for x in saved_last] or flags != store["flags"]:
         store["last"], store["flags"] = saved_last, flags
