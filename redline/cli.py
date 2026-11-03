@@ -82,6 +82,7 @@ def main(argv: list[str] | None = None) -> int:
                    choices=["show", "refresh", "flow", "plan-set", "plan-clear", "plan-message", "edit-message"])
     p.add_argument("--json", action="store_true")
     p.add_argument("--model", help="refresh/flow: a [models] entry (default: outline_model), or pane")
+    p.add_argument("--all", action="store_true", help="refresh: drop every thought and rewrite them all")
     p.add_argument("--op", choices=["merge", "split"], help="edit-message")
     p.add_argument("--hashes", help="edit-message: comma separated block hashes")
     p.add_argument("--instruction", default="", help="edit-message: what you want")
@@ -169,6 +170,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--client", help="tmux client to show the menu on")
     p.add_argument("--force", action="store_true", help="switch even if the check fails")
     p.add_argument("--refresh", action="store_true", help="re-read opencode's model list")
+    p.add_argument("--for", dest="for_", choices=["agent", "outline"], default="agent",
+                   help="outline: choose the model for the overview's thoughts and flow check instead of the pane's agent")
     p = sub.add_parser("save-layout", help="remember the current pane arrangement for this paper")
     p.add_argument("--session", help="tmux session (default: the current one)")
     p = sub.add_parser("open", help="start the tmux workspace")
@@ -364,7 +367,7 @@ def _run(a: argparse.Namespace) -> int:
             return 0
         from .spin import spinning
         with spinning("asking the model" if (a.model or proj.cfg.outline_model) != "pane" else "sending to the agent"):
-            print((OA.refresh if a.action == "refresh" else OA.flow)(proj, a.model))
+            print(OA.refresh(proj, a.model, everything=a.all) if a.action == "refresh" else OA.flow(proj, a.model))
         return 0
     if a.cmd == "sessions":
         from . import config
@@ -562,8 +565,6 @@ def _sync_cmd(s, a: argparse.Namespace) -> int:
     return done(s.push_only())
 
 
-if __name__ == "__main__":
-    sys.exit(main())
 
 
 def _agent_cmd(a) -> int:
@@ -581,12 +582,13 @@ def _agent_cmd(a) -> int:
         if a.menu:
             agentpick.menu(proj, a.session or LA._session_of_caller(), a.client)
         elif a.name:
-            msg = agentpick.switch(proj, a.name, a.session, a.force)
+            msg = (agentpick.set_outline(proj, a.name, a.force) if a.for_ == "outline"
+                   else agentpick.switch(proj, a.name, a.session, a.force))
             if a.session and not sys.stdout.isatty():
                 subprocess.run(["tmux", "display-message", *(["-c", a.client] if a.client else []), msg])
             print(msg)
         else:
-            items = agentpick.listing(proj, a.refresh)
+            items = agentpick.listing(proj, a.refresh, a.for_)
             if a.json:
                 print(json.dumps(items))
             else:
@@ -599,3 +601,7 @@ def _agent_cmd(a) -> int:
                             f"redline agent: {str(e).splitlines()[-1][:180]}"])
         raise RedlineError(str(e))
     return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

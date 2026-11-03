@@ -54,10 +54,11 @@ def _env() -> dict[str, str]:
     return env
 
 
-def mcp_servers(proj: Project) -> dict:
+def mcp_servers(proj: Project, readonly: bool = False) -> dict:
     cmd = redline_cmd()
     servers = {"redline": {"command": cmd[0], "args": cmd[1:] + ["mcp"],
-                           "env": {**_env(), "REDLINE_ROOT": str(proj.cfg.root)}}}
+                           "env": {**_env(), "REDLINE_ROOT": str(proj.cfg.root),
+                                   **({"REDLINE_READONLY": "1"} if readonly else {})}}}
     for name, c in proj.cfg.mcp_extra.items():
         if not c:
             continue
@@ -68,8 +69,8 @@ def mcp_servers(proj: Project) -> dict:
     return servers
 
 
-def mcp_config(proj: Project, kind: str | None = None) -> dict:
-    servers = mcp_servers(proj)
+def mcp_config(proj: Project, kind: str | None = None, readonly: bool = False) -> dict:
+    servers = mcp_servers(proj, readonly)
     if (kind or proj.cfg.agent_kind) == "opencode":
         return {"$schema": "https://opencode.ai/config.json",
                 "mcp": {n: {"type": "local", "command": [s["command"], *s["args"]],
@@ -89,13 +90,13 @@ def _merge_json(path: Path, update) -> None:
     path.write_text(json.dumps(data, indent=2) + "\n")
 
 
-def write_mcp_config(proj: Project) -> str:
+def write_mcp_config(proj: Project, readonly: bool = False) -> str:
     """Merge our servers into both agents' project configs (other entries are kept),
     so switching the agent pane between claude and opencode keeps the tools."""
     root = proj.cfg.root
     paths = []
     for kind, name, key in (("claude", ".mcp.json", "mcpServers"), ("opencode", "opencode.json", "mcp")):
-        cfg = mcp_config(proj, kind)
+        cfg = mcp_config(proj, kind, readonly)
 
         def upd(data, cfg=cfg, key=key):
             data.setdefault(key, {}).update(cfg[key])
@@ -181,7 +182,15 @@ def open_workspace(root: Path | None, attach: bool = True, pdf: bool = False, tw
             _tmux("set-option", "-p", "-t", prev, "@redline_role", "preview")
         _tmux("select-pane", "-t", editor)
         _tmux("set-option", "-p", "-t", editor, "@redline_role", "paper")
-        code = proj.cfg.code_dir if proj.cfg.code_dir and Path(proj.cfg.code_dir).is_dir() else str(root)
+        from .codeaccess import is_dir_within
+        code = str(root)
+        if proj.cfg.code_dir:
+            ok = is_dir_within(Path(proj.cfg.code_dir), 4)
+            if ok:
+                code = proj.cfg.code_dir
+            elif ok is None:
+                print(f"code_dir {proj.cfg.code_dir} does not answer (stale network mount?): the code window opens "
+                      "in the paper directory instead", file=sys.stderr)
         code_pane = _tmux("new-window", "-d", "-P", "-F", "#{pane_id}", "-t", f"={name}:",
                           "-n", "code", "-c", code, in_login_shell("nvim ."))
         _tmux("split-window", "-h", "-l", "35%", "-t", code_pane, "-c", code)

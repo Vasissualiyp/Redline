@@ -809,6 +809,25 @@ def test_outline_refresh_runs_the_chosen_model_headless(home, tmp_path):
         outline_agent.flow(proj, "fake")
 
 
+def test_thoughts_must_be_short(home):
+    from redline import outline
+    from redline.state import Project
+    d = make_paper(home)
+    (d / "main.tex").write_text(OUTLINE_TEX)
+    proj = Project.open(d)
+    h = [n["hash"] for n in outline.build(proj)["nodes"] if n["kind"] != "heading"]
+    assert "10 words or fewer" in outline.pending(proj)
+    ok = outline.record(proj, [{"hash": h[0], "thought": "Stars form in gas clouds"}])
+    assert ok == "recorded 1 thought(s)"
+    long = " ".join(["word"] * 20)
+    msg = outline.record(proj, [{"hash": h[1], "thought": long}, {"hash": h[2], "thought": "Fine and short"}])
+    assert msg.startswith("recorded 1 thought(s)") and "too long" in msg and h[1] in msg
+    assert outline.build(proj)["missing"] == len(h) - 2
+    config.set_key(d, "outline_words", 6)
+    assert "6 words or fewer" in outline.pending(Project.open(d))
+    assert outline.forget(Project.open(d)).startswith("2 thought")
+
+
 def test_agentpick_headless_commands():
     from redline import agentpick
     oc = {"cmd": "opencode --standalone", "model": "deepseek/deepseek-flash#high"}
@@ -816,3 +835,71 @@ def test_agentpick_headless_commands():
                                                        "deepseek/deepseek-flash#high", "do it"]
     assert agentpick.headless_command({"cmd": "claude", "model": "haiku"}, "hi") == [
         "claude", "-p", "--allowedTools", "mcp__redline", "--model", "haiku", "hi"]
+
+
+def test_overview_runs_cannot_edit_the_paper(home, monkeypatch):
+    import json
+    from redline import launcher
+    from redline.state import Project
+    d = make_paper(home)
+    (d / "main.tex").write_text(OUTLINE_TEX)
+    proj = Project.open(d)
+    launcher.write_mcp_config(proj, readonly=True)
+    assert json.loads((d / ".mcp.json").read_text())["mcpServers"]["redline"]["env"]["REDLINE_READONLY"] == "1"
+    assert json.loads((d / "opencode.json").read_text())["mcp"]["redline"]["environment"]["REDLINE_READONLY"] == "1"
+    launcher.write_mcp_config(proj)
+    assert "REDLINE_READONLY" not in json.loads((d / ".mcp.json").read_text())["mcpServers"]["redline"]["env"]
+    monkeypatch.setenv("REDLINE_READONLY", "1")
+    from redline.service import Service
+    with pytest.raises(Exception, match="read-only"):
+        Service(proj).propose_replace("Second paragraph here", "Changed paragraph here")
+    assert "Second paragraph here" in (d / "main.tex").read_text()
+    from redline import outline
+    h = [n["hash"] for n in outline.build(proj)["nodes"] if n["kind"] != "heading"][0]
+    assert outline.record(proj, [{"hash": h, "thought": "still allowed"}]) == "recorded 1 thought(s)"
+
+
+def test_agent_can_find_and_read_the_code_dir(home, tmp_path, monkeypatch):
+    from redline import codeaccess, mcp_server
+    from redline.state import Project
+    code = tmp_path / "analysis"
+    (code / "plots").mkdir(parents=True)
+    (code / "plots" / "plot_mass.py").write_text("import numpy as np\nM = np.load('m.npy')\nplt.plot(M)  # mass\n")
+    (code / "notes.md").write_text("# notes\nSFE is M_star / (M_gas + M_star)\n")
+    (code / "data.bin").write_bytes(b"\x00\x01")
+    (tmp_path / "secret.txt").write_text("not for the agent")
+    d = make_paper(home)
+    config.set_key(d, "code_dir", str(code))
+    proj = Project.open(d)
+    ov = codeaccess.overview(proj)
+    assert str(code) in ov and "plot_mass.py" in ov
+    assert "plots/plot_mass.py" in codeaccess.listing(proj) and "data.bin" not in codeaccess.listing(proj)
+    assert "plt.plot(M)" in codeaccess.read(proj, "plots/plot_mass.py", 1, 3)
+    assert "notes.md:2" in codeaccess.search(proj, "sfe")
+    with pytest.raises(Exception, match="outside"):
+        codeaccess.read(proj, "../secret.txt")
+    (code / "link").symlink_to(tmp_path / "secret.txt")
+    with pytest.raises(Exception, match="outside"):
+        codeaccess.read(proj, "link")
+    # the agent is told where it is, and status says so
+    monkeypatch.setenv("REDLINE_ROOT", str(d))
+    assert str(code) in mcp_server.instructions() and "never ask the human where it is" in mcp_server.instructions()
+    from redline.service import Service
+    assert Service(proj).status()["code_dir"] == str(code)
+    # no code_dir: a clear answer
+    config.set_key(d, "code_dir", "")
+    with pytest.raises(Exception, match="no code_dir"):
+        codeaccess.overview(Project.open(d))
+
+
+def test_a_hung_mount_does_not_block(tmp_path, monkeypatch):
+    import threading, time
+    from redline import codeaccess
+    from pathlib import Path as P
+    block = threading.Event()
+    real = P.is_dir
+    monkeypatch.setattr(P, "is_dir", lambda self: block.wait(30) or real(self) if str(self).endswith("hung") else real(self))
+    t0 = time.time()
+    assert codeaccess.is_dir_within(tmp_path / "hung", 0.3) is None and time.time() - t0 < 2
+    assert codeaccess.is_dir_within(tmp_path, 1) is True
+    block.set()

@@ -8,6 +8,7 @@ the other.
 """
 from __future__ import annotations
 
+import os
 import datetime as _dt
 import json
 import shutil
@@ -84,6 +85,8 @@ class Project:
 
     # ---- writing -----------------------------------------------------------------
     def write(self, new: str, *, expect: str, reason: str, new_origin: str | None = None) -> None:
+        if os.environ.get("REDLINE_READONLY") and new != self.read():
+            raise RedlineError("this session is read-only (an overview run): it may only record thoughts and flags")
         cur = self.read()
         if cur != expect:
             raise _Stale()

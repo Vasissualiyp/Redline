@@ -57,6 +57,8 @@ two_sessions = false
 # The overview (`gO` in nvim): which [models] entry writes the one-line "thoughts" and runs the flow
 # check, headless. A cheap model is plenty: "deepseek", "qwen-local", ... or "pane" for the agent pane.
 outline_model = "deepseek"
+# How long a thought may be, in words (the model is told; much longer ones are refused).
+outline_words = 10
 # Shell command run before pushing (e.g. rsync fresh plots into light/).
 pre_push = ""
 compile_timeout = 600
@@ -140,6 +142,7 @@ class Config:
     single_editor: bool = False
     two_sessions: bool = False
     outline_model: str = "deepseek"
+    outline_words: int = 10
     auto_sync_seconds: int = 20
     auto_sync_poll: int = 120
     category: str = ""      # tree path in the `redline full` list, e.g. "Papers/Pop III"
@@ -227,6 +230,8 @@ def load(root: Path | None = None) -> Config:
         cfg.two_sessions = bool(data["two_sessions"])
     if "single_editor" in data:
         cfg.single_editor = bool(data["single_editor"])
+    if "outline_words" in data:
+        cfg.outline_words = max(4, int(data["outline_words"]))
     for k in ("auto_sync_seconds", "auto_sync_poll"):
         if k in data:
             setattr(cfg, k, max(5, int(data[k])))

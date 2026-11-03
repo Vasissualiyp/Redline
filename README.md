@@ -534,3 +534,12 @@ in the PDF pane**.
   `S` to split the block under the cursor into several; both take a free-text instruction and produce tracked edits. The new
   paragraphs get fresh thoughts on the next `r`.
 - `?` inside lists the keys.
+
+## The agent and the analysis code
+
+`code_dir` was only the directory of the "code" tmux window, so an agent could not know where the plotting code is. Now the
+agent's instructions name it (when the paper has a `code_dir`), `status()` shows it, and four read-only tools work whatever the
+agent's sandbox says: `code_dir()` (location, top level, plotting scripts), `code_list(glob)`, `code_read(path, lines)`,
+`code_search(query)`. They cannot leave the directory (paths and symlinks are resolved first). A `code_dir` on a network
+mount (cluster scratch over sshfs) that has gone stale would hang forever; Redline answers "does not answer within 6 s" instead
+of freezing, and `redline open` starts the code window in the paper directory. Restart the agent to pick up the new tools.

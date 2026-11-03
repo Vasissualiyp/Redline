@@ -9,6 +9,7 @@ from mcp.server.mcpserver import Context, MCPServer
 
 from .model import RedlineError
 from .service import Service
+from . import codeaccess as _code
 from . import others as _others
 from . import outline as _outline
 from .state import Project
@@ -86,15 +87,24 @@ VERIFICATION_OFF = """\
 
 
 def instructions() -> str:
-    """The server instructions; the refcheck rule is replaced when this paper turns it off."""
+    """The server instructions: the refcheck rule is replaced when this paper turns it off, and
+    the analysis code's location is added when the paper has a code_dir."""
+    text = INSTRUCTIONS
     try:
         from . import config
-        if not config.load().enforce_verification:
-            return re.sub(r"- REFCHECK IS MANDATORY\..*?(?=- Pending changes)", lambda m: VERIFICATION_OFF,
-                          INSTRUCTIONS, flags=re.S)
+        cfg = config.load()
+        if not cfg.enforce_verification:
+            text = re.sub(r"- REFCHECK IS MANDATORY\..*?(?=- Pending changes)", lambda m: VERIFICATION_OFF,
+                          text, flags=re.S)
+        if cfg.code_dir:
+            text = text.replace("- Pending changes are addressed by id", (
+                f"- The analysis / plotting code is in {cfg.code_dir} (this paper's code_dir). Read it with code_dir() / "
+                "code_list / code_read / code_search (read-only, works whatever your sandbox says) to check numbers, "
+                "captions and figure details yourself; never ask the human where it is.\n"
+                "- Pending changes are addressed by id"), 1)
     except Exception:
         pass
-    return INSTRUCTIONS
+    return text
 
 
 mcp = MCPServer(name="redline", instructions=instructions())
@@ -159,6 +169,32 @@ def review_notes() -> str:
 def status() -> str:
     """Counts of pending items, markers and lint errors."""
     return _safe(lambda: str(svc().status()))
+
+
+# ---- the analysis / plotting code (read-only) ---------------------------------------
+@mcp.tool()
+def code_dir() -> str:
+    """Where this paper's analysis and plotting code lives (code_dir), with its top level and the
+    plotting scripts. Read-only; use code_list / code_read / code_search to look inside."""
+    return _safe(lambda: _code.overview(svc().proj))
+
+
+@mcp.tool()
+def code_list(glob: str = "**/*") -> str:
+    """Text/code files under code_dir matching a glob (e.g. '**/plot*.py')."""
+    return _safe(lambda: _code.listing(svc().proj, glob))
+
+
+@mcp.tool()
+def code_read(path: str, first_line: int | None = None, last_line: int | None = None) -> str:
+    """Read a file of code_dir (path relative to it) with line numbers; at most 600 lines at once."""
+    return _safe(lambda: _code.read(svc().proj, path, first_line, last_line))
+
+
+@mcp.tool()
+def code_search(query: str, glob: str = "**/*", regex: bool = False) -> str:
+    """Search the code in code_dir (case-insensitive): where a number, a column or a figure is produced."""
+    return _safe(lambda: _code.search(svc().proj, query, glob, regex))
 
 
 # ---- the other papers (read-only) -----------------------------------------------

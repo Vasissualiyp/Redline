@@ -28,7 +28,9 @@ _BEGIN = re.compile(r"^[ \t]*\\begin\{([A-Za-z*]+)\}")
 _HEAD = re.compile(r"^[ \t]*\\(section|subsection|subsubsection)\*?\s*(?:\[[^\]]*\])?\s*\{")
 _COMMENT_LINE = re.compile(r"^[ \t]*%")
 FLOW_KINDS = ("gap", "repeat", "forward-ref", "weak-transition", "orphan-figure", "other")
-MAX_THOUGHT = 320
+DEFAULT_WORDS = 10   # a thought is a glance, not a summary
+SLACK = 4             # over words + slack is refused so the agent shortens it
+MAX_THOUGHT = 140
 
 
 @dataclass
@@ -345,16 +347,21 @@ def build(proj: Project, doc: Document | None = None) -> dict:
 
 
 # ---- what the agent does ----------------------------------------------------------
+def words_limit(proj: Project) -> int:
+    return max(4, int(getattr(proj.cfg, "outline_words", DEFAULT_WORDS)))
+
+
 def pending(proj: Project, limit: int = 40) -> str:
     o = build(proj)
     todo = [n for n in o["nodes"] if n["kind"] != "heading" and (n["thought"] is None or n["stale"])]
     if not todo:
         return "every block has an up-to-date thought"
     path = []
-    out = [f"{len(todo)} block(s) need a thought (showing {min(limit, len(todo))}). For each: ONE sentence, at most "
-           "25 words, in the paper's own terms: the claim or idea this block conveys in the argument (a figure: "
-           "what it shows and why it is there; a list: the point of the list; an equation: what it defines or "
-           "lets you do). Then call record_thoughts once with [{hash, thought}, ...].", ""]
+    w = words_limit(proj)
+    out = [f"{len(todo)} block(s) need a thought (showing {min(limit, len(todo))}). For each: a SHORT phrase, "
+           f"{w} words or fewer, no filler, in the paper's terms: the one idea the block adds (a figure: what it shows; "
+           "a list: its point; an equation: what it defines). Telegraphic is fine ('Turbulence drives fragmentation', "
+           "'Disk Q profile over time'). Then call record_thoughts once with [{hash, thought}, ...].", ""]
     sec = ""
     for n in todo[:limit]:
         for h in reversed(o["nodes"][:n["index"]]):
@@ -371,7 +378,8 @@ def record(proj: Project, items: list[dict], model: str = "") -> str:
     o = build(proj)
     known = {n["hash"] for n in o["nodes"] if n["kind"] != "heading"}
     store = load_store(proj)
-    done, bad = 0, []
+    done, bad, long_ = 0, [], []
+    limit = words_limit(proj)
     for it in items:
         h, t = str(it.get("hash", "")).strip(), " ".join(str(it.get("thought", "")).split())
         if h not in known:
@@ -379,11 +387,19 @@ def record(proj: Project, items: list[dict], model: str = "") -> str:
             continue
         if not t:
             raise RedlineError(f"{h}: empty thought")
+        if len(t.split()) > limit + SLACK:
+            long_.append(f"{h} ({len(t.split())} words)")
+            continue
         store["thoughts"][h] = {"thought": t[:MAX_THOUGHT], "model": model, "at": time.strftime("%Y-%m-%dT%H:%M:%S")}
         done += 1
     save_store(proj, store)
     msg = f"recorded {done} thought(s)"
-    return msg + (f"; unknown hashes ignored (the block changed meanwhile?): {', '.join(bad)}" if bad else "")
+    if bad:
+        msg += f"; unknown hashes ignored (the block changed meanwhile?): {', '.join(bad)}"
+    if long_:
+        msg += (f"; NOT recorded, too long (max {limit} words, shorter please): {', '.join(long_)}; "
+                "send these again, shortened")
+    return msg
 
 
 def overview(proj: Project) -> str:
@@ -511,6 +527,16 @@ def flow_task() -> str:
             "Do not edit the paper.")
 
 
-def thoughts_task() -> str:
-    return ("Call outline_pending(), write one short thought per block it lists, and call record_thoughts once with "
-            "all of them (repeat until it reports nothing pending). Do not edit the paper.")
+def forget(proj: Project) -> str:
+    """Drop every thought (they are rewritten on the next refresh)."""
+    store = load_store(proj)
+    n = len(store["thoughts"])
+    store["thoughts"], store["last"] = {}, []
+    save_store(proj, store)
+    return f"{n} thought(s) dropped"
+
+
+def thoughts_task(words: int = DEFAULT_WORDS) -> str:
+    return (f"Call outline_pending(), write one very short thought ({words} words or fewer) per block it lists, and "
+            "call record_thoughts once with all of them. If record_thoughts says some were too long, shorten and "
+            "send those again. Repeat until nothing is pending. Do not edit the paper.")

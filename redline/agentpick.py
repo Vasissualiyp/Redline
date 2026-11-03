@@ -90,11 +90,31 @@ def check(proj: Project, entry: dict, refresh: bool = False) -> str:
     return ""
 
 
-def listing(proj: Project, refresh: bool = False) -> list[dict]:
-    cur = current(proj)
-    return [{"name": n, "label": e.get("label", n), "kind": kind(e), "model": e.get("model", ""),
-             "current": n == cur, "problem": check(proj, e, refresh)}
-            for n, e in proj.cfg.models.items()]
+def listing(proj: Project, refresh: bool = False, for_: str = "agent") -> list[dict]:
+    """The choices for the agent pane (for_="agent") or for the overview's thoughts / flow check
+    ("outline": the same models plus "pane", the agent pane itself)."""
+    cur = current(proj) if for_ == "agent" else proj.cfg.outline_model
+    items = [{"name": n, "label": e.get("label", n), "kind": kind(e), "model": e.get("model", ""),
+              "current": n == cur, "problem": check(proj, e, refresh)}
+             for n, e in proj.cfg.models.items()]
+    if for_ == "outline":
+        items.append({"name": "pane", "label": "The agent pane (whatever model runs there)", "kind": "pane",
+                      "model": "", "current": cur == "pane", "problem": ""})
+    return items
+
+
+def set_outline(proj: Project, name: str, force: bool = False) -> str:
+    """Choose the model that writes the overview's thoughts and runs its flow check (outline_model)."""
+    from . import config
+    if name != "pane":
+        if name not in proj.cfg.models:
+            raise RedlineError(f"unknown model {name!r}; choices: {', '.join(proj.cfg.models)}, pane")
+        problem = check(proj, proj.cfg.models[name])
+        if problem and not force:
+            raise RedlineError(f"{proj.cfg.models[name].get('label', name)}: {problem}")
+    config.set_key(proj.cfg.root, "outline_model", name)
+    label = "the agent pane" if name == "pane" else proj.cfg.models[name].get("label", name)
+    return f"overview model (thoughts, flow check): {label}"
 
 
 def _merge(dst: dict, src: dict) -> None:
@@ -123,11 +143,12 @@ def _session() -> str | None:
     return r.stdout.strip() or None
 
 
-def prepare(proj: Project, entry: dict) -> None:
+def prepare(proj: Project, entry: dict, readonly: bool = False) -> None:
     """MCP configs current and the entry's opencode settings (provider overrides) merged in,
-    without making it the pane's model: for headless one-off runs."""
+    without making it the pane's model: for headless one-off runs. readonly: the Redline MCP
+    server of this run refuses to write the paper (REDLINE_READONLY)."""
     from .launcher import write_mcp_config
-    write_mcp_config(proj)
+    write_mcp_config(proj, readonly)
     if kind(entry) == "opencode" and entry.get("opencode"):
         path = proj.cfg.root / "opencode.json"
         data = json.loads(path.read_text()) if path.exists() else {}
@@ -191,6 +212,16 @@ def menu(proj: Project, session: str, client: str | None = None) -> None:
         cmd = "run-shell " + _tmux_arg(["env", "-u", "PYTHONPATH", *_env_assign(), *redline_cmd(), "-C",
                                         str(proj.cfg.root), "agent", it["name"], "--session", session])
         args += [f"{mark}{it['label']}", next(keys), cmd]
+    args += ["", "-#[fg=yellow]Overview model (thoughts, flow check)", "", ""]
+    for it in listing(proj, for_="outline"):
+        mark = "* " if it["current"] else "  "
+        if it["problem"]:
+            args += [f"-{mark}{it['label']}  ({it['problem'][:50]})", "", ""]
+            continue
+        cmd = "run-shell " + _tmux_arg(["env", "-u", "PYTHONPATH", *_env_assign(), *redline_cmd(), "-C",
+                                        str(proj.cfg.root), "agent", it["name"], "--for", "outline",
+                                        "--session", session])
+        args += [f"{mark}{it['label']}", "", cmd]
     args += ["", "Cancel", "q", ""]
     _tmux(*args)
 

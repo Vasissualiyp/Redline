@@ -13,6 +13,7 @@ local core = require("redline")
 local M = {}
 
 M.color = { gui = "#e5c07b", cterm = 180 } -- the "one" palette's yellow
+M.color.gui_int = tonumber(M.color.gui:sub(2), 16)
 
 function M.in_review(buf)
   local st = core.bufs[buf or vim.api.nvim_get_current_buf()]
@@ -35,6 +36,11 @@ end
 
 --- What lightline's mode component shows (called from the statusline).
 function M.lightline_label()
+  -- lightline resets its highlight groups on its own schedule (mode changes, redraws, our spinner
+  -- ticks): repaint here, during the statusline evaluation, so REVIEW stays yellow on every draw
+  if M.in_review() and vim.fn.mode() == "n" then
+    M.paint(true)
+  end
   local tex = M.in_review() and require("redline.autocompile").status() or ""
   local busy = require("redline.spinner").label()
   if busy ~= "" then
@@ -75,11 +81,14 @@ local function hl(name)
 end
 
 --- Colour the mode segment for the current buffer: REVIEW's colour, or normal's again.
-function M.paint()
+function M.paint(quiet)
   if not hooked then
     return
   end
   if M.in_review() then
+    if quiet and hl("LightlineLeft_normal_0").bg == M.color.gui_int then
+      return -- already yellow
+    end
     -- every segment drawn in the mode's colour (the mode name, and in most
     -- themes the line:column block on the right), separators included
     local mode = hl("LightlineLeft_normal_0")
@@ -109,7 +118,9 @@ function M.paint()
   else
     pcall(vim.fn["lightline#highlight"], "normal")
   end
-  vim.cmd("redrawstatus")
+  if not quiet then
+    vim.cmd("redrawstatus")
+  end
 end
 
 --- Called when a buffer enters or leaves review mode.
@@ -129,6 +140,16 @@ vim.api.nvim_create_autocmd({ "BufEnter", "WinEnter" }, {
     if hooked then
       M.paint()
     end
+  end,
+})
+vim.api.nvim_create_autocmd({ "ModeChanged", "InsertLeave", "CmdlineLeave" }, {
+  group = group,
+  callback = function()
+    vim.schedule(function()
+      if hooked then
+        M.paint()
+      end
+    end)
   end,
 })
 vim.api.nvim_create_autocmd("ColorScheme", {

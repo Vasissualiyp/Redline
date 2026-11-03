@@ -12,6 +12,7 @@ M.config = {
   follow = true, -- move the PDF pane with the cursor in review mode
   labels = true, -- show C12 (and %N notes) at the end of changed lines in review mode
   label_origin = false, -- also show who made the change (claude-code, opencode, ...)
+  outline_width = 52, -- width of the gO overview sidebar (`>` `<` `|` resize it, the mouse too)
   auto_compile = 10, -- compile once the paper has been quiet this many seconds (0 = off)
 }
 

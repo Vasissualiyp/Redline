@@ -26,7 +26,7 @@ def run(proj: Project, task: str, model: str | None = None, stream=None, timeout
     problem = agentpick.check(proj, entry)
     if problem:
         raise RedlineError(f"{entry.get('label', name)}: {problem}")
-    agentpick.prepare(proj, entry)
+    agentpick.prepare(proj, entry, readonly=True)  # thoughts only: the paper cannot be edited by this run
     cmd = agentpick.headless_command(entry, task)
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)
@@ -43,17 +43,22 @@ def run(proj: Project, task: str, model: str | None = None, stream=None, timeout
     except subprocess.TimeoutExpired:
         p.kill()
         raise RedlineError(f"{name} timed out after {timeout}s")
+    finally:
+        from .launcher import write_mcp_config
+        write_mcp_config(proj)  # back to the normal (writable) tool config for the agent pane
     if p.returncode != 0:
         raise RedlineError(f"{name} failed ({p.returncode}):\n{''.join(out)[-1500:]}")
     return f"{entry.get('label', name)}: done"
 
 
-def refresh(proj: Project, model: str | None = None, stream=None) -> str:
+def refresh(proj: Project, model: str | None = None, stream=None, everything: bool = False) -> str:
+    if everything:
+        outline.forget(proj)
     before = outline.build(proj)
     todo = before["missing"] + before["stale"]
     if not todo:
         return "every thought is up to date"
-    res = run(proj, outline.thoughts_task(), model, stream)
+    res = run(proj, outline.thoughts_task(outline.words_limit(proj)), model, stream)
     after = outline.build(proj)
     return f"{res}; {todo - after['missing'] - after['stale']} of {todo} thought(s) written, " \
            f"{after['missing'] + after['stale']} still open"

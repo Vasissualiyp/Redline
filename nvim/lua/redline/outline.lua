@@ -17,7 +17,7 @@ local rpc = require("redline.rpc")
 local M = {}
 local S = {
   buf = nil, win = nil, mode = "side", root = nil, paper = nil, data = nil, plan = nil, hist = {},
-  collapsed = {}, cut = nil, marks = {}, touched = {}, lines = {}, busy = nil, timer = nil, follow_timer = nil,
+  collapsed = {}, cut = nil, marks = {}, touched = {}, width = nil, wide = false, lines = {}, busy = nil, timer = nil, follow_timer = nil,
 }
 M._state = S -- for tests
 local ns = vim.api.nvim_create_namespace("redline_outline")
@@ -485,12 +485,12 @@ local function edit_task(op)
   end)
 end
 
-local function model_task(action, model)
+local function model_task(action, model, everything)
   if S.busy then return vim.notify("redline overview: busy (" .. S.busy .. ")") end
   local label = action == "flow" and "checking the flow" or "writing thoughts"
   busy("⠿ " .. label)
   local stop = require("redline.spinner").start(label)
-  run("overview " .. action .. (model and (" --model " .. model) or ""), nil, function(r)
+  run("overview " .. action .. (model and (" --model " .. model) or "") .. (everything and " --all" or ""), nil, function(r)
     stop()
     busy(nil)
     local out = ((r.stdout or "") .. (r.stderr or "")):gsub("%s+$", "")
@@ -567,13 +567,37 @@ local function help()
       { name = "Build", hl = "Build", title = "Thoughts and flow", entries = {
         { key = "r", mode = "n", desc = "write missing / stale thoughts with the outline_model (cheap model, headless)" },
         { key = "R", mode = "n", desc = "same, through the paper's agent pane" },
+        { key = "W", mode = "n", desc = "rewrite EVERY thought (e.g. after changing outline_words)" },
         { key = "f", mode = "n", desc = "flow check: the model flags gaps, repeats, forward references ..." },
         { key = "gr", mode = "n", desc = "reload (also automatic after you edit the paper)" } } },
       { name = "Session", hl = "Session", title = "Window", entries = {
-        { key = "s", mode = "n", desc = "sidebar <-> full tab" }, { key = "q", mode = "n", desc = "close" } } },
+        { key = "s", mode = "n", desc = "sidebar <-> full tab" },
+        { key = "> <", mode = "n", desc = "wider / narrower sidebar (also <C-w>< <C-w>> or drag the border with the mouse)" },
+        { key = "|", mode = "n", desc = "toggle a wide sidebar (60% of the screen) and back" },
+        { key = "q", mode = "n", desc = "close" } } },
     },
     notes = { "~ stale thought (the block changed)   ∅ no thought yet   ⇅ moved in the plan   ◆ marked   ✂ cut" },
   })
+end
+
+local function resize(delta)
+  if not M.is_open() or S.mode ~= "side" then return end
+  local w = vim.api.nvim_win_get_width(S.win) + delta
+  w = math.max(24, math.min(vim.o.columns - 20, w))
+  vim.api.nvim_win_set_width(S.win, w)
+  S.width, S.wide = w, false
+end
+
+local function toggle_wide()
+  if not M.is_open() or S.mode ~= "side" then return end
+  if S.wide then
+    vim.api.nvim_win_set_width(S.win, S.normal_width or 52)
+    S.width, S.wide = S.normal_width or 52, false
+  else
+    S.normal_width = vim.api.nvim_win_get_width(S.win)
+    vim.api.nvim_win_set_width(S.win, math.floor(vim.o.columns * 0.6))
+    S.wide = true
+  end
 end
 
 local function map(lhs, fn, desc) vim.keymap.set("n", lhs, fn, { buffer = S.buf, nowait = true, silent = true, desc = "redline overview: " .. desc }) end
@@ -608,21 +632,32 @@ local function setup_buffer()
   map("S", function() edit_task("split") end, "split")
   map("r", function() model_task("refresh") end, "thoughts")
   map("R", function() model_task("refresh", "pane") end, "thoughts via the agent pane")
+  map("W", function()
+    if vim.fn.confirm("Rewrite EVERY thought (the current ones are dropped)?", "&Yes\n&No", 2) == 1 then model_task("refresh", nil, true) end
+  end, "rewrite every thought")
   map("f", function() model_task("flow") end, "flow check")
   map("]f", function() next_flag(1) end, "next flag")
   map("[f", function() next_flag(-1) end, "previous flag")
   map("gr", function() fetch() end, "reload")
   map("s", function() M.toggle_mode() end, "sidebar <-> tab")
+  map(">", function() resize(6) end, "wider")
+  map("<", function() resize(-6) end, "narrower")
+  map("|", toggle_wide, "wide <-> normal")
   map("q", function() M.close() end, "close")
   map("?", help, "help")
   vim.api.nvim_create_autocmd("CursorMoved", { buffer = S.buf, callback = follow })
+  vim.api.nvim_create_autocmd("WinResized", { callback = function()  -- a manual resize (mouse, <C-w><) is kept
+    if S.mode == "side" and M.is_open() and vim.tbl_contains(vim.v.event.windows or {}, S.win) and not S.wide then
+      S.width = vim.api.nvim_win_get_width(S.win)
+    end
+  end })
 end
 
 local function open_window()
   if S.mode == "tab" then
     vim.cmd("tab split")
   else
-    vim.cmd("topleft 52vsplit")
+    vim.cmd(("topleft %dvsplit"):format(S.width or core.config.outline_width or 52))
   end
   S.win = vim.api.nvim_get_current_win()
   vim.api.nvim_win_set_buf(S.win, S.buf)
@@ -655,6 +690,7 @@ function M.open(mode)
   S.data = S.data or { nodes = {}, total = 0, stale = 0, missing = 0, flags = 0 }
   render()
   fetch(function()
+    if not M.is_open() then return end
     local v = S.data and S.data.nodes
     if v and #v > 0 and vim.api.nvim_win_get_cursor(S.win)[1] <= FIRST then pcall(vim.api.nvim_win_set_cursor, S.win, { FIRST + 1, 0 }) end
     if S.data.missing + S.data.stale > 0 then

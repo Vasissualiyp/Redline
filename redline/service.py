@@ -133,6 +133,7 @@ class Service:
             "lint_errors": sum(1 for i in _lint.lint(doc, self.proj.cfg.enforce_verification) if i.severity == "error"),
             "has_base": (self.proj.dir / "base").exists(),
             "pdf": str(_compile.view_pdf(self.proj)),
+            "code_dir": self.proj.cfg.code_dir or None,
         }
         return st
 
