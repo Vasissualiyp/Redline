@@ -18,7 +18,7 @@ local rpc = require("redline.rpc")
 local M = {}
 local S = {
   buf = nil, win = nil, mode = "side", root = nil, paper = nil, data = nil, plan = nil,
-  collapsed = {}, marks = {}, deleted = {}, width = nil, wide = false, hide_counts = nil, lines = {}, busy = nil, timer = nil, follow_timer = nil,
+  collapsed = {}, marks = {}, deleted = {}, hist = {}, redo = {}, applied = false, width = nil, wide = false, hide_counts = nil, lines = {}, busy = nil, timer = nil, follow_timer = nil,
 }
 M._state = S -- for tests
 local ns = vim.api.nvim_create_namespace("redline_outline")
@@ -291,7 +291,12 @@ local function render()
     end
   end
   S.rendering = true
+  -- native undo only covers the edits since the last render: a render (reload, commit, fold) is not an
+  -- edit to undo, and undoing it would show a buffer that disagrees with the plan
+  local ul = vim.bo[S.buf].undolevels
+  vim.bo[S.buf].undolevels = -1
   vim.api.nvim_buf_set_lines(S.buf, 0, -1, false, lines)
+  vim.bo[S.buf].undolevels = ul
   vim.bo[S.buf].modified = false
   S.rendering = false
   vim.api.nvim_buf_clear_namespace(S.buf, ns, 0, -1)
@@ -445,8 +450,15 @@ local function hidden_below(list, i)
 end
 
 --- Read the buffer: its lines' hidden ids give the wanted order; ids that are gone are deleted.
+local function snapshot()
+  return { plan = S.plan and vim.deepcopy(S.plan) or nil, deleted = vim.deepcopy(S.deleted) }
+end
+
 local function commit()
   if not (S.buf and vim.api.nvim_buf_is_valid(S.buf) and S.data) then return end
+  table.insert(S.hist, snapshot()) -- so that u can take this commit back
+  if #S.hist > 100 then table.remove(S.hist, 1) end
+  S.redo = {}
   local fresh = by_hash()
   local before = nodes()
   local at = {}
@@ -489,6 +501,7 @@ local function commit()
 end
 
 local function plan_reset()
+  table.insert(S.hist, snapshot())
   S.plan, S.deleted = nil, {}
   fetch()
   vim.notify("redline overview: plan discarded, reloaded from the paper")
@@ -530,7 +543,8 @@ local function apply_plan()
         local out = vim.trim((r2.stdout or "") .. (r2.stderr or ""))
         vim.notify("redline overview: " .. out, r2.code == 0 and vim.log.levels.INFO or vim.log.levels.WARN)
         if r2.code == 0 then
-          S.plan, S.deleted = nil, {}
+          S.plan, S.deleted, S.hist, S.redo = nil, {}, {}, {}
+          S.applied = true -- u can still take the whole plan back (one write in the paper's journal)
           core.reload()
           fetch()
         end
@@ -636,6 +650,51 @@ local function next_split(step)
   next_where(function(n) return n.split and #n.split >= 2 end, step, "no split recommendations")
 end
 
+-- ---- undo / redo -------------------------------------------------------------------------
+local function restore(state)
+  S.plan, S.deleted = state.plan, state.deleted
+  redraw_keep()
+end
+
+-- (a render clears the undo entries but not the sequence numbers: count the entries too)
+local function native_undo_left() local t = vim.fn.undotree() return #t.entries > 0 and t.seq_cur > 0 end
+local function native_redo_left() local t = vim.fn.undotree() return #t.entries > 0 and t.seq_last > t.seq_cur end
+
+local function undo()
+  if native_undo_left() then -- edits not committed yet: the buffer's own undo
+    vim.cmd("silent! undo")
+    return
+  end
+  local prev = table.remove(S.hist)
+  if prev then
+    table.insert(S.redo, snapshot())
+    restore(prev)
+    vim.notify(("redline overview: undid a plan step (%d more)"):format(#S.hist))
+    return
+  end
+  if S.applied then -- the plan was applied to the paper: one write in the journal
+    if vim.fn.confirm("Undo the plan that was applied to the paper (the last redline write)?", "&Yes\n&No", 2) ~= 1 then return end
+    run("undo", nil, function(r)
+      local out = vim.trim((r.stdout or "") .. (r.stderr or ""))
+      vim.notify("redline overview: " .. out, r.code == 0 and vim.log.levels.INFO or vim.log.levels.WARN)
+      if r.code == 0 then S.applied = false; core.reload(); fetch() end
+    end)
+    return
+  end
+  vim.notify("redline overview: nothing to undo")
+end
+
+local function redo()
+  if native_redo_left() then
+    vim.cmd("silent! redo")
+    return
+  end
+  local nxt = table.remove(S.redo)
+  if not nxt then return vim.notify("redline overview: nothing to redo") end
+  table.insert(S.hist, snapshot())
+  restore(nxt)
+end
+
 -- ---- recommendations: split, move, merge ---------------------------------------------
 local function dismiss_here()
   local v = cur_vis()
@@ -652,6 +711,8 @@ end
 
 --- Move the block (with its subtree) after another block in the draft plan.
 local function plan_move(hash, after)
+  table.insert(S.hist, snapshot())
+  S.redo = {}
   local list = S.plan or vim.deepcopy(S.data.nodes)
   local ci, ti
   for i, n in ipairs(list) do
@@ -779,7 +840,7 @@ local function help()
         { key = "dd  p P", mode = "n", desc = "cut a line (or 50dd, V...d, a folded section) and paste it elsewhere = MOVE it" },
         { key = "dd", mode = "n", desc = "cut without pasting = DELETE the block (asked again before it reaches the agent)" },
         { key = ":w", mode = "n", desc = "commit: parse the lines into the plan (moved ⇅, deleted counted in the header)" },
-        { key = "u  <C-r>", mode = "n", desc = "undo / redo the edits as usual" },
+        { key = "u  <C-r>", mode = "n", desc = "undo / redo: uncommitted edits first, then plan commits, finally an applied plan (asks)" },
         { key = "gA", mode = "n", desc = "apply the plan: directly (declarative tracked moves / deletions, one undo) or via the agent" },
         { key = "gr", mode = "n", desc = "discard the plan / any edit and reload from the paper" } } },
       { name = "Move", hl = "Move", title = "Move and fold (numbers and relative numbers are on)", entries = {
@@ -855,6 +916,8 @@ local function setup_buffer()
   map("zM", function() fold_all(true) end, "close all")
   map("zR", function() fold_all(false) end, "open all")
   map("gA", apply_plan, "apply the plan")
+  map("u", undo, "undo (edits, then plan steps, then an applied plan)")
+  map("<C-r>", redo, "redo")
   map("gr", function() plan_reset() end, "discard the plan and reload")
   map("m", function()
     local v = cur_vis()

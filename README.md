@@ -570,3 +570,7 @@ the pane shows its first two pages stitched.
 - **Full reclassification:** `gW` / `gC` (after a confirmation screen listing what is dropped) runs every block through the model
   again and resets everything that depends on the thoughts (recommendations, flow flags, dismissals); use it after changing how
   thoughts are written. Your draft plan and marks stay.
+
+**Undo in the overview** (`u`, `<C-r>`) works in layers: edits you have not committed yet (the buffer's own undo), then
+each plan commit (`:w`), `ga` and `gd`-reset step, and finally a plan you applied directly to the paper (it asks, then reverts that
+one write, like `redline undo`). A reload or commit is never an undo step of its own.
