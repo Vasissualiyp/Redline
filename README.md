@@ -472,3 +472,7 @@ process and socket a pane would have, so everything the editor does to the PDF (
 recompiles, `e` to jump to the source) works exactly as in one window; the jump selects the editor's window in the other
 session. Quitting closes both, from either side: `\jQ` / `prefix Q` / `redline quit`; the confirmation lists the windows of
 both. Layout presets leave the missing PDF pane out.
+
+One-off, without changing the paper's setting: `redline open --two-sessions` (or `redline full open NAME --two-sessions`;
+`--one-session` forces a single session), and in `redline full` **shift+enter** (or `O`, for terminals that cannot tell
+shift+enter from enter) opens the paper in two sessions; the list marks such papers `running ×2`.

@@ -603,3 +603,39 @@ def test_two_sessions_is_a_paper_setting(home, capsys):
     assert config.load(a).two_sessions is False
     assert cli.main(["full", "set", "alpha", "two_sessions=true"]) == 0
     assert config.load(a).two_sessions is True
+
+
+def test_tui_open_in_two_sessions(home, monkeypatch):
+    from redline import launcher
+    make_paper(home, "alpha")
+    from redline.fulltui import Full
+    import os
+    os.environ.pop("TMUX", None)
+    app = None
+
+    async def go():
+        nonlocal app
+        app = Full()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await pilot.pause(0.6)
+            await pilot.press("O")
+            await pilot.pause(0.5)
+    asyncio.run(go())
+    assert app.open_root.name == "alpha" and app.open_two is True
+    calls = []
+    monkeypatch.setattr(launcher, "open_workspace", lambda root, attach=True, pdf=False, two=None: calls.append(two) or 0)
+    monkeypatch.setattr(os, "execvp", lambda *a: None)
+    from redline import fulltui
+    monkeypatch.setattr(fulltui.Full, "run", lambda self, *a, **k: setattr(self, "open_root", Path("/x/alpha")) or setattr(self, "open_two", True))
+    fulltui.run()
+    assert calls == [True]
+
+
+def test_open_cli_flags(monkeypatch):
+    from redline import cli, launcher
+    got = []
+    monkeypatch.setattr(launcher, "open_workspace", lambda root, attach=True, pdf=False, two=None: got.append((attach, pdf, two)) or 0)
+    cli.main(["open", "--two-sessions", "--no-attach"])
+    cli.main(["open", "--one-session", "--no-attach"])
+    cli.main(["open", "--pdf", "--no-attach"])
+    assert got == [(False, False, True), (False, False, False), (False, True, None)]

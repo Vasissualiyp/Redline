@@ -92,6 +92,7 @@ class Info:
     category: str = ""
     notes: str = ""
     strict: bool = True          # refcheck enforcement
+    pdf_session: bool = False    # a two-session paper whose PDF session is running
 
     def as_dict(self) -> dict:
         d = self.__dict__.copy()
@@ -111,7 +112,9 @@ def ago(t: float) -> str:
 
 def info(root: Path, running: set[str] | None = None) -> Info:
     it = Info(root.name, root)
-    it.running = session_name(root) in (sessions() if running is None else running)
+    live = sessions() if running is None else running
+    it.running = session_name(root) in live
+    it.pdf_session = session_name(root) + "-pdf" in live
     try:
         proj = Project.open(root)
         it.name = proj.cfg.project_name  # the Overleaf project's name, as written there

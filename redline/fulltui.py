@@ -508,6 +508,7 @@ class Full(App):
     TITLE = "Redline: all papers"
     BINDINGS = [
         Binding("o", "open", "Open"),
+        Binding("O,shift+enter", "open_two", "Open (2 sessions)"),
         Binding("l", "enter", "Changes"),
         Binding("h", "back", "Back"),
         Binding("slash", "search", "Search"),
@@ -829,7 +830,7 @@ class Full(App):
                 strict = "" if it.strict else " [dim red](refcheck off)[/]"
                 t.add_row(f"{'  ' * depth}[{node.color}]·[/] {escape(it.name)}{strict}", _cell(it.pending),
                           _cell(it.unrated, warn=True), sync,
-                          "[green]running[/]" if it.running else "[dim]-[/]", registry.ago(it.active), "",
+                          ("[green]running ×2[/]" if it.pdf_session else "[green]running[/]") if it.running else "[dim]-[/]", registry.ago(it.active), "",
                           key=str(it.path))
         if keep and keep in self.rows or keep and keep.startswith("cat:"):
             with contextlib.suppress(Exception):
@@ -1382,32 +1383,41 @@ class Full(App):
     def say(self, text: str) -> None:
         self.query_one("#log", RichLog).write(text)
 
-    def action_open(self) -> None:
+    def action_open_two(self) -> None:
+        """nvim + agent in one tmux session, the PDF view in a second (shift+enter, or O where the
+        terminal cannot tell shift+enter from enter)."""
+        self.action_open(two=True)
+
+    def action_open(self, two: bool = False) -> None:
         root = self.paper if self.level == "changes" else (self.selected().path if self.selected() else None)
         if not root:
             return
         line = (self.change() or {}).get("lines", [0])[0] if self.level == "changes" else 0
         if os.environ.get("TMUX"):
-            self.say(f"opening {root.name} in tmux...")
-            self.attach(root, line)
+            self.say(f"opening {root.name} in tmux" + (" (2 sessions)" if two else "") + "...")
+            self.attach(root, line, two)
         else:
             self.open_root = root
             self.open_line = line
+            self.open_two = two
             self.quit_now()
 
     @work(thread=True)
-    def attach(self, root: Path, line: int = 0) -> None:
+    def attach(self, root: Path, line: int = 0, two: bool = False) -> None:
         from .launcher import open_workspace
         out = io.StringIO()
         try:
             with contextlib.redirect_stdout(out):
-                open_workspace(root, attach=False)
+                open_workspace(root, attach=False, two=True if two else None)
             if line:
                 from . import quick
                 quick.goto(root, line)
             from .launcher import _tmux
             _tmux("switch-client", "-t", f"={registry.session_name(root)}")
             self.call_from_thread(self.say, f"switched to {registry.session_name(root)}")
+            if two:
+                self.call_from_thread(self.say, f"PDF session: attach it in another terminal with "
+                                                f"`redline open --pdf` (tmux attach -t {registry.session_name(root)}-pdf)")
         except Exception as e:
             self.call_from_thread(self.say, f"cannot open: {e}")
         self.call_from_thread(self.action_refresh)
@@ -1495,7 +1505,11 @@ def run() -> int:
     app.run()
     if app.open_root:
         from .launcher import open_workspace
-        rc = open_workspace(app.open_root, attach=False)
+        two = True if getattr(app, "open_two", False) else None
+        rc = open_workspace(app.open_root, attach=False, two=two)
+        if two and not rc:
+            print(f"PDF session: attach it in another terminal with `redline open --pdf` "
+                  f"(tmux attach -t {registry.session_name(app.open_root)}-pdf)")
         if getattr(app, "open_line", 0):
             from . import quick
             quick.goto(app.open_root, app.open_line)

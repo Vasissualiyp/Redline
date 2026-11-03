@@ -135,7 +135,8 @@ def _has_session(name: str) -> bool:
     return subprocess.run(["tmux", "has-session", "-t", f"={name}"], capture_output=True).returncode == 0
 
 
-def open_workspace(root: Path | None, attach: bool = True, pdf: bool = False) -> int:
+def open_workspace(root: Path | None, attach: bool = True, pdf: bool = False, two: bool | None = None) -> int:
+    """Start (or reach) the paper's tmux workspace. two: True/False overrides the paper's two_sessions setting."""
     root = _config.find_root(root)
     fresh = not (root / _config.CONFIG_NAME).exists()
     _config.write_default(root)
@@ -150,7 +151,7 @@ def open_workspace(root: Path | None, attach: bool = True, pdf: bool = False) ->
         return 1
 
     name = "redline-" + re.sub(r"[^A-Za-z0-9_-]+", "-", root.name).strip("-")
-    two = proj.cfg.two_sessions
+    two = proj.cfg.two_sessions if two is None else two
     pdf_name = pdf_session_name(name)
     exists = _has_session(name)
     if not exists:

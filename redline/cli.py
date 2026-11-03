@@ -67,6 +67,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dir", help="new: directory for the paper (default: next to your other papers)")
     p.add_argument("--code-dir", default="", help="new: analysis code directory (default: analysis/ inside the paper)")
     p.add_argument("--no-verification", action="store_true", help="new: not a project whose citations are refchecked")
+    p.add_argument("--two-sessions", action="store_true", help="open: nvim + agent and the PDF view in two tmux sessions")
     p.add_argument("--json", action="store_true")
     p.add_argument("--no-attach", action="store_true", help="open: start the session without attaching")
 
@@ -161,6 +162,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("dir", nargs="?")
     p.add_argument("--no-attach", action="store_true")
     p.add_argument("--pdf", action="store_true", help="two_sessions papers: attach the PDF session instead")
+    p.add_argument("--two-sessions", action="store_true",
+                   help="this time: nvim + agent in one tmux session, the PDF view in a second (overrides the paper's setting)")
+    p.add_argument("--one-session", action="store_true", help="this time: everything in one session")
 
     a = ap.parse_args(argv)
     if a.root:
@@ -244,7 +248,7 @@ def _full_cmd(a: argparse.Namespace) -> int:
         if not a.name:
             print("redline full open: give a paper name (`redline full list`)", file=sys.stderr)
             return 2
-        return open_workspace(registry.find(a.name), attach=not a.no_attach)
+        return open_workspace(registry.find(a.name), attach=not a.no_attach, two=True if a.two_sessions else None)
     # new
     if not a.name:
         print("redline full new: give the paper's name", file=sys.stderr)
@@ -267,7 +271,8 @@ def _run(a: argparse.Namespace) -> int:
         return 0
     if a.cmd == "open":
         from .launcher import open_workspace
-        return open_workspace(Path(a.dir).expanduser() if a.dir else None, attach=not a.no_attach, pdf=a.pdf)
+        return open_workspace(Path(a.dir).expanduser() if a.dir else None, attach=not a.no_attach, pdf=a.pdf,
+                              two=True if a.two_sessions else (False if a.one_session else None))
     if a.cmd == "agent":
         return _agent_cmd(a)
     if a.cmd == "full":
