@@ -259,12 +259,7 @@ def propose_replace(doc: Document, old_text: str, new_text: str, comment: str | 
 def propose_delete(doc: Document, old_text: str, comment: str | None = None,
                    section: str | None = None, occurrence: int | None = None) -> list[TextEdit]:
     s, e = locate(doc, old_text, section, occurrence)
-    _check_span(doc, s, e, what="old_text")
-    old = doc.src[s:e]
-    _check_strikeable(old)
-    edits = _with_comment(doc, e, _paired("", old), comment)
-    edits[0] = TextEdit(s, e, edits[0].text)
-    return edits
+    return delete_span(doc, s, e, comment)
 
 
 def propose_insert(doc: Document, text: str, after: str | None = None, before: str | None = None,
@@ -349,11 +344,17 @@ def propose_move(doc: Document, text: str, after: str | None = None, before: str
     if bool(after) == bool(before):
         raise RedlineError("give exactly one of after= or before= for the destination")
     s, e = locate(doc, text, section, occurrence)
+    ts, te = locate(doc, after or before, to_section)
+    return move_span(doc, s, e, te if after else ts, after=bool(after), comment=comment)
+
+
+def move_span(doc: Document, s: int, e: int, pos: int, *, after: bool = True, comment: str | None = None,
+              lead: str = "", trail: str = "") -> list[TextEdit]:
+    r"""Tracked move of doc.src[s:e] to offset pos. lead/trail go around the moved text at the
+    destination (a paragraph break, for whole blocks); without them a word space is kept."""
     _check_span(doc, s, e, what="text to move")
     old = doc.src[s:e]
     _check_strikeable(old)
-    ts, te = locate(doc, after or before, to_section)
-    pos = te if after else ts
     if s <= pos <= e:
         raise RedlineError("the destination lies inside the text being moved")
     _check_span(doc, pos, pos, what="destination")
@@ -363,14 +364,27 @@ def propose_move(doc: Document, text: str, after: str | None = None, before: str
     out = _with_comment(doc, e, _mark("deleted", old), f"Moved to{where(dst_sec) or ' below'}{why}.")
     out[0] = TextEdit(s, e, out[0].text)
     moved = _mark("added", old)
-    prev = doc.src[pos - 1] if pos else "\n"
-    nxt = doc.src[pos] if pos < len(doc.src) else "\n"
-    if after and not prev.isspace() and not old[:1].isspace():
-        moved = " " + moved   # keep a word space at the destination
-    if before and not nxt.isspace() and not old[-1:].isspace():
-        moved = moved + " "
+    if lead or trail:
+        moved = lead + moved + trail
+    else:
+        prev = doc.src[pos - 1] if pos else "\n"
+        nxt = doc.src[pos] if pos < len(doc.src) else "\n"
+        if after and not prev.isspace() and not old[:1].isspace():
+            moved = " " + moved   # keep a word space at the destination
+        if not after and not nxt.isspace() and not old[-1:].isspace():
+            moved = moved + " "
     out += _with_comment(doc, pos, moved, f"Moved here from{where(src_sec) or ' above'}{why}.")
     return out
+
+
+def delete_span(doc: Document, s: int, e: int, comment: str | None = None) -> list[TextEdit]:
+    """Tracked deletion of doc.src[s:e] (what propose_delete does once it has located the text)."""
+    _check_span(doc, s, e, what="old_text")
+    old = doc.src[s:e]
+    _check_strikeable(old)
+    edits = _with_comment(doc, e, _paired("", old), comment)
+    edits[0] = TextEdit(s, e, edits[0].text)
+    return edits
 
 
 def revise_change(doc: Document, it: Change, new_text: str | None = None,

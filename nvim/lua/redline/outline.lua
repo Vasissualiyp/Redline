@@ -8,16 +8,17 @@
 -- or ask the agent to merge / split blocks. Thoughts are written by a cheap model of your
 -- choice (outline_model in .redline.toml); the flow check adds coloured flags.
 --
--- keys (? inside): j k move; <CR> to the paper; h l za zM zR fold; J K move in the plan; x cut,
--- p P gp paste; u U undo / reset the plan; A apply the plan; m mark, M merge, S split; r R thoughts
--- (model / agent pane); f flow check; ]f [f next flag; s sidebar <-> tab; q close.
+-- The buffer is editable, like Oil: dd a line (or a visual block, or a folded section) and p it elsewhere
+-- to MOVE it, dd alone to DELETE it, then :w to commit the draft plan (the paper is untouched until
+-- gA hands the plan to the agent as tracked moves / deletions). Numbers and relative numbers are on, so
+-- 50dd, 12j, :m work as usual. Unwanted edits: gr reloads. ? lists the keys.
 local core = require("redline")
 local rpc = require("redline.rpc")
 
 local M = {}
 local S = {
-  buf = nil, win = nil, mode = "side", root = nil, paper = nil, data = nil, plan = nil, hist = {},
-  collapsed = {}, cut = nil, marks = {}, touched = {}, width = nil, wide = false, lines = {}, busy = nil, timer = nil, follow_timer = nil,
+  buf = nil, win = nil, mode = "side", root = nil, paper = nil, data = nil, plan = nil,
+  collapsed = {}, marks = {}, deleted = {}, width = nil, wide = false, lines = {}, busy = nil, timer = nil, follow_timer = nil,
 }
 M._state = S -- for tests
 local ns = vim.api.nvim_create_namespace("redline_outline")
@@ -109,7 +110,7 @@ local function reconcile_plan()
   end
   local prev
   for _, n in ipairs(S.data.nodes) do
-    if not present[n.hash] then
+    if not present[n.hash] and not S.deleted[n.hash] then
       local at = #out
       for i, m in ipairs(out) do if m.hash == (prev or "") then at = i break end end
       table.insert(out, at + 1, vim.deepcopy(n))
@@ -173,19 +174,25 @@ local function columns(n)
   return PRE_FMT:format(fmt(n.nlines or 0), fmt(n.words or 0), fmt(n.chars or 0))
 end
 
+local MARK = #"‹0123456789›" -- the hidden id at the start of every node line (concealed)
+
 local function render()
   if not (S.buf and vim.api.nvim_buf_is_valid(S.buf)) then return end
   local list = nodes()
-  local moved, nmoved = moved_set()
+  local moved = moved_set()
+  local nmoved = 0
+  for _ in pairs(moved) do nmoved = nmoved + 1 end
+  local ndel = 0
+  for _ in pairs(S.deleted) do ndel = ndel + 1 end
   local vis = visible()
   local lines, marks = {}, {}
   S.lines = {}
   local d = S.data or { total = 0, stale = 0, missing = 0, flags = 0 }
   local head = (" Overview  %d blocks · %d stale · %d without thought · %d flags"):format(d.total, d.stale, d.missing, d.flags)
-  if S.plan then head = head .. ("  · PLAN: %d moved"):format(nmoved or 0) end
+  if S.plan then head = head .. ("  · PLAN: %d moved, %d deleted (gA applies, gr discards)"):format(nmoved, ndel) end
   if S.busy then head = head .. "  · " .. S.busy end
   table.insert(lines, head)
-  table.insert(lines, PRE_FMT:format("l", "w", "c") .. "? keys · r thoughts · f flow · J K x p plan · A apply")
+  table.insert(lines, PRE_FMT:format("l", "w", "c") .. "? keys · dd p move · dd delete · :w commit · gA apply plan")
   for _, v in ipairs(vis) do
     local n = v.n
     local pad = ("  "):rep(math.max(n.depth, 0))
@@ -193,7 +200,7 @@ local function render()
     if has_children(v.i, list) then fold = S.collapsed[n.hash] and "▸" or "▾" end
     local text, group
     if n.kind == "heading" then
-      text = n.title
+      text = ((n.number or "") ~= "" and (n.number .. "  ") or "") .. n.title -- 3.4.1  Title
       group = "RedlineOutlineHead"
     elseif n.thought then
       text = n.thought
@@ -202,16 +209,17 @@ local function render()
       text = "∅ " .. (n.text or ""):sub(1, 90)
       group = "RedlineOutlineMissing"
     end
-    local tag = (n.stale and "~" or "") .. (S.plan and S.touched[n.hash] and "⇅" or "") .. (S.marks[n.hash] and "◆" or "")
-      .. (S.cut == n.hash and "✂" or "")
-    local line = columns(n) .. ("%s%s%s%s %s"):format(pad, fold, ICON[n.kind] or "?", tag ~= "" and tag or "", text)
+    local tag = (n.stale and "~" or "") .. (S.plan and moved[n.hash] and "⇅" or "") .. (S.marks[n.hash] and "◆" or "")
+    local id = "‹" .. n.hash .. "›"
+    local line = id .. columns(n) .. ("%s%s%s%s %s"):format(pad, fold, ICON[n.kind] or "?", tag ~= "" and tag or "", text)
     table.insert(lines, line)
     local row = #lines - 1
     S.lines[row] = v
-    table.insert(marks, { row, 0, PRE, "RedlineOutlineCounts" })
-    local icon_from = PRE + #pad + #fold
-    table.insert(marks, { row, icon_from, #line, S.cut == n.hash and "RedlineOutlineCut" or group })
-    if (S.plan and S.touched[n.hash]) or S.marks[n.hash] then
+    table.insert(marks, { row, 0, #id, nil, { conceal = true } })
+    table.insert(marks, { row, #id, #id + PRE, "RedlineOutlineCounts" })
+    local icon_from = #id + PRE + #pad + #fold
+    table.insert(marks, { row, icon_from, #line, group })
+    if (S.plan and moved[n.hash]) or S.marks[n.hash] then
       table.insert(marks, { row, icon_from, icon_from + #ICON[n.kind] + #tag, S.marks[n.hash] and "RedlineOutlineMark" or "RedlineOutlineMoved" })
     end
     for _, f in ipairs(n.flags or {}) do
@@ -219,9 +227,10 @@ local function render()
       table.insert(marks, { row, -1, -1, nil, { virt = (" "):rep(PRE - 2) .. ("%s    %s: %s"):format(pad, label, f.note) } })
     end
   end
-  vim.bo[S.buf].modifiable = true
+  S.rendering = true
   vim.api.nvim_buf_set_lines(S.buf, 0, -1, false, lines)
-  vim.bo[S.buf].modifiable = false
+  vim.bo[S.buf].modified = false
+  S.rendering = false
   vim.api.nvim_buf_clear_namespace(S.buf, ns, 0, -1)
   vim.api.nvim_buf_set_extmark(S.buf, ns, 0, 0, { end_col = #lines[1], hl_group = "RedlineOutlineHeader" })
   vim.api.nvim_buf_set_extmark(S.buf, ns, 1, 0, { end_col = #lines[2], hl_group = "RedlineOutlineCounts" })
@@ -229,7 +238,9 @@ local function render()
   local virt = {}
   for _, m in ipairs(marks) do
     local extra = m[5]
-    if extra and extra.virt then
+    if extra and extra.conceal then
+      vim.api.nvim_buf_set_extmark(S.buf, ns, m[1], m[2], { end_col = m[3], conceal = "" })
+    elseif extra and extra.virt then
       virt[m[1]] = virt[m[1]] or {}
       table.insert(virt[m[1]], { { extra.virt, "RedlineOutlineFlag" } })
     elseif m[4] then
@@ -318,104 +329,65 @@ local function busy(label)
   if S.buf and vim.api.nvim_buf_is_valid(S.buf) then redraw_keep() end
 end
 
--- ---- the plan ----------------------------------------------------------------------
-local function plan_begin()
-  if not S.plan then
-    S.plan = vim.deepcopy(S.data.nodes)
+-- ---- the plan: edit the buffer, :w commits it --------------------------------------
+local function hidden_below(list, i)
+  -- the nodes folded away under a collapsed heading / list: they travel with it (or go with it)
+  local out, n = {}, list[i]
+  for j = i + 1, #list do
+    if list[j].depth <= n.depth then break end
+    table.insert(out, list[j])
   end
-  table.insert(S.hist, vim.deepcopy(S.plan))
-  if #S.hist > 50 then table.remove(S.hist, 1) end
+  return out
 end
 
-local function subtree(list, i)
-  local n, j = list[i], i
-  while list[j + 1] and list[j + 1].depth > n.depth and (n.kind == "heading" or n.kind == "list") do j = j + 1 end
-  return i, j
-end
-
-local function move_sibling(step)
-  local v = cur_vis()
-  if not v then return end
-  plan_begin()
-  local list = S.plan
-  local i = v.i
-  local a, b = subtree(list, i)
-  local n = list[i]
-  local ia, ib
-  if step > 0 then
-    local nx = list[b + 1]
-    if not nx or nx.depth ~= n.depth or (nx.kind == "heading") ~= (n.kind == "heading") and n.kind == "heading" then
-      table.remove(S.hist); return vim.notify("redline overview: nothing below to swap with (use x / p to move across sections)") end
-    local _, nb = subtree(list, b + 1)
-    local chunk = {}
-    for k = a, b do table.insert(chunk, list[k]) end
-    for _ = a, b do table.remove(list, a) end
-    for k, x in ipairs(chunk) do table.insert(list, nb - (b - a) + k - 0, x) end
-  else
-    local k = a - 1
-    while k >= 1 and list[k].depth > n.depth do k = k - 1 end
-    local pv = list[k]
-    if not pv or pv.depth ~= n.depth then
-      table.remove(S.hist); return vim.notify("redline overview: nothing above to swap with (use x / p to move across sections)") end
-    local chunk = {}
-    for q = a, b do table.insert(chunk, list[q]) end
-    for _ = a, b do table.remove(list, a) end
-    for q, x in ipairs(chunk) do table.insert(list, k + q - 1, x) end
+--- Read the buffer: its lines' hidden ids give the wanted order; ids that are gone are deleted.
+local function commit()
+  if not (S.buf and vim.api.nvim_buf_is_valid(S.buf) and S.data) then return end
+  local fresh = by_hash()
+  local before = nodes()
+  local at = {}
+  for i, n in ipairs(before) do at[n.hash] = i end
+  local order, seen, dup = {}, {}, 0
+  for _, line in ipairs(vim.api.nvim_buf_get_lines(S.buf, 0, -1, false)) do
+    local h = line:match("‹(%x+)›")
+    if h and fresh[h] then
+      if seen[h] then
+        dup = dup + 1 -- a yanked copy: copies are not supported, the first one counts
+      else
+        seen[h] = true
+        local node = fresh[h]
+        table.insert(order, vim.tbl_extend("force", node, { depth = node.depth }))
+        if S.collapsed[h] and at[h] then -- a folded section moves (or goes) as a whole
+          for _, sub in ipairs(hidden_below(before, at[h])) do
+            if not seen[sub.hash] then
+              seen[sub.hash] = true
+              table.insert(order, vim.tbl_extend("force", fresh[sub.hash] or sub, {}))
+            end
+          end
+        end
+      end
+    end
   end
-  S.touched[n.hash] = true
-  recompute_depths(S.plan)
+  S.deleted = {}
+  for _, n in ipairs(S.data.nodes) do
+    if not seen[n.hash] then S.deleted[n.hash] = true end
+  end
+  recompute_depths(order)
+  local same = #order == #S.data.nodes
+  if same then for i, n in ipairs(order) do if n.hash ~= S.data.nodes[i].hash then same = false break end end end
+  S.plan = (not same or next(S.deleted)) and order or nil
   redraw_keep()
-  cursor_to_hash(n.hash)
-end
-
-local function cut()
-  local v = cur_vis()
-  if not v then return end
-  S.cut = v.n.hash
-  render()
-  vim.notify("redline overview: cut «" .. ((v.n.thought or v.n.title or v.n.text or ""):sub(1, 50)) .. "»; p / P / gp paste")
-end
-
-local function paste(where)
-  if not S.cut then return vim.notify("redline overview: nothing cut (x)") end
-  local v = cur_vis()
-  if not v then return end
-  plan_begin()
-  local list = S.plan
-  local ci
-  for i, n in ipairs(list) do if n.hash == S.cut then ci = i end end
-  if not ci or list[ci].hash == v.n.hash then table.remove(S.hist); return end
-  local a, b = subtree(list, ci)
-  local chunk = {}
-  for k = a, b do table.insert(chunk, list[k]) end
-  for _ = a, b do table.remove(list, a) end
-  local ti
-  for i, n in ipairs(list) do if n.hash == v.n.hash then ti = i end end
-  if not ti then S.plan = table.remove(S.hist); return end
-  local at
-  if where == "before" then at = ti
-  elseif where == "into" then at = ti + 1
-  else local _, tb = subtree(list, ti); at = tb + 1 end
-  for k, x in ipairs(chunk) do table.insert(list, at + k - 1, x) end
-  S.cut = nil
-  S.touched[chunk[1].hash] = true
-  recompute_depths(S.plan)
-  redraw_keep()
-  cursor_to_hash(chunk[1].hash)
-end
-
-local function plan_undo()
-  local prev = table.remove(S.hist)
-  if not prev then return vim.notify("redline overview: nothing to undo") end
-  S.plan = prev
-  if #S.hist == 0 then S.plan, S.touched = nil, {} end -- back to the paper's own order
-  redraw_keep()
+  local _, nm = moved_set()
+  local nd = 0
+  for _ in pairs(S.deleted) do nd = nd + 1 end
+  vim.notify(S.plan and ("redline overview: plan has %d moved, %d deleted block(s)%s; gA applies it, gr discards it")
+    :format(nm or 0, nd, dup > 0 and ("; " .. dup .. " copy line(s) ignored") or "") or "redline overview: no changes to the paper's order")
 end
 
 local function plan_reset()
-  S.plan, S.hist, S.cut, S.touched = nil, {}, nil, {}
-  redraw_keep()
-  vim.notify("redline overview: plan discarded")
+  S.plan, S.deleted = nil, {}
+  fetch()
+  vim.notify("redline overview: plan discarded, reloaded from the paper")
 end
 
 -- ---- the agent -------------------------------------------------------------------
@@ -423,20 +395,49 @@ local function send(text)
   require("redline.tmux").send_agent(text)
 end
 
-local function apply_plan()
-  if not S.plan then return vim.notify("redline overview: no plan (J K x p rearrange first)") end
+local function plan_counts()
   local _, n = moved_set()
-  if n == 0 then return vim.notify("redline overview: the plan changes nothing") end
-  if vim.fn.confirm(("Hand %d move(s) to the agent as tracked moves?"):format(n), "&Yes\n&No", 1) ~= 1 then return end
-  local order = {}
+  local nd = 0
+  for _ in pairs(S.deleted) do nd = nd + 1 end
+  return n or 0, nd
+end
+
+local function plan_payload()
+  local order, deleted = {}, {}
   for _, x in ipairs(S.plan) do table.insert(order, x.hash) end
-  run("overview plan-set", { stdin = vim.json.encode(order) }, function(r1)
+  for h in pairs(S.deleted) do table.insert(deleted, h) end
+  return vim.json.encode({ order = order, deleted = deleted })
+end
+
+local function apply_plan()
+  if vim.bo[S.buf].modified then commit() end
+  if not S.plan then return vim.notify("redline overview: no plan (dd / p lines, then :w)") end
+  local n, nd = plan_counts()
+  if n == 0 and nd == 0 then return vim.notify("redline overview: the plan changes nothing") end
+  local q = ("Apply the plan: %d move(s), %d deletion(s)%s"):format(n, nd, nd > 0 and "  (deletions are tracked, you can reject them)" or "")
+  -- directly = declaratively, no agent: every move / deletion becomes tracked markup in one undoable write
+  local pick = vim.fn.confirm(q, "&Directly (tracked, no agent)\n&Hand to the agent\n&Cancel", 1)
+  if pick ~= 1 and pick ~= 2 then return end
+  run("overview plan-set", { stdin = plan_payload() }, function(r1)
     if r1.code ~= 0 then return vim.notify("redline overview: " .. (r1.stderr or ""), vim.log.levels.ERROR) end
-    run("overview plan-message", nil, function(r2)
-      if r2.code ~= 0 then return vim.notify("redline overview: " .. (r2.stderr or ""), vim.log.levels.ERROR) end
-      send(r2.stdout)
-      vim.notify("redline overview: plan sent to the agent; refresh (gr) when it is done")
-    end)
+    if pick == 1 then
+      core.flush()
+      run("overview plan-apply", nil, function(r2)
+        local out = vim.trim((r2.stdout or "") .. (r2.stderr or ""))
+        vim.notify("redline overview: " .. out, r2.code == 0 and vim.log.levels.INFO or vim.log.levels.WARN)
+        if r2.code == 0 then
+          S.plan, S.deleted = nil, {}
+          core.reload()
+          fetch()
+        end
+      end)
+    else
+      run("overview plan-message", nil, function(r2)
+        if r2.code ~= 0 then return vim.notify("redline overview: " .. (r2.stderr or ""), vim.log.levels.ERROR) end
+        send(r2.stdout)
+        vim.notify("redline overview: plan sent to the agent; gr reloads when it is done")
+      end)
+    end
   end)
 end
 
@@ -548,35 +549,33 @@ end
 local function help()
   require("redline.help").open({
     groups = {
-      { name = "Move", hl = "Move", title = "Move and fold", entries = {
-        { key = "j k", mode = "n", desc = "move (the paper and the PDF follow: the whole block is highlighted); columns l w c = lines, words, chars" },
-        { key = "<CR> o", mode = "n", desc = "go to the block in the paper" },
-        { key = "h l za", mode = "n", desc = "fold: h closes / goes to the parent, l opens, za toggles" },
-        { key = "zM zR", mode = "n", desc = "close all sections / open all" },
+      { name = "Decide", hl = "Decide", title = "Rearrange like Oil: edit the lines, :w commits a draft plan", entries = {
+        { key = "dd  p P", mode = "n", desc = "cut a line (or 50dd, V...d, a folded section) and paste it elsewhere = MOVE it" },
+        { key = "dd", mode = "n", desc = "cut without pasting = DELETE the block (asked again before it reaches the agent)" },
+        { key = ":w", mode = "n", desc = "commit: parse the lines into the plan (moved ⇅, deleted counted in the header)" },
+        { key = "u  <C-r>", mode = "n", desc = "undo / redo the edits as usual" },
+        { key = "gA", mode = "n", desc = "apply the plan: directly (declarative tracked moves / deletions, one undo) or via the agent" },
+        { key = "gr", mode = "n", desc = "discard the plan / any edit and reload from the paper" } } },
+      { name = "Move", hl = "Move", title = "Move and fold (numbers and relative numbers are on)", entries = {
+        { key = "j k 12j gg G H M L <C-d>", mode = "n", desc = "all the usual motions" },
+        { key = "<CR>", mode = "n", desc = "go to the block in the paper (the PDF highlights the whole block while you move)" },
+        { key = "za zo zc zM zR <Tab>", mode = "n", desc = "fold / unfold; a folded section moves or goes as a whole" },
         { key = "]f [f", mode = "n", desc = "next / previous flow flag" } } },
-      { name = "Decide", hl = "Decide", title = "Rearrange (a draft plan; the paper is untouched)", entries = {
-        { key = "J K", mode = "n", desc = "move the block (or section with its content) down / up among its siblings" },
-        { key = "x", mode = "n", desc = "cut the block / section" },
-        { key = "p P gp", mode = "n", desc = "paste after / before / into the section under the cursor" },
-        { key = "u U", mode = "n", desc = "undo one plan step / discard the whole plan" },
-        { key = "A", mode = "n", desc = "apply the plan: the agent executes it as tracked moves" } } },
       { name = "Agent", hl = "Agent", title = "Merge and split with the agent", entries = {
         { key = "m", mode = "n", desc = "mark / unmark the block for merging" },
-        { key = "M", mode = "n", desc = "merge the marked blocks (or this one and the next) into one paragraph" },
-        { key = "S", mode = "n", desc = "split this block into several thoughts" } } },
+        { key = "gm", mode = "n", desc = "merge the marked blocks (or this one and the next) into one paragraph" },
+        { key = "gs", mode = "n", desc = "split this block into several thoughts" } } },
       { name = "Build", hl = "Build", title = "Thoughts and flow", entries = {
-        { key = "r", mode = "n", desc = "write missing / stale thoughts with the outline_model (cheap model, headless)" },
-        { key = "R", mode = "n", desc = "same, through the paper's agent pane" },
-        { key = "W", mode = "n", desc = "rewrite EVERY thought (e.g. after changing outline_words)" },
-        { key = "f", mode = "n", desc = "flow check: the model flags gaps, repeats, forward references ..." },
-        { key = "gr", mode = "n", desc = "reload (also automatic after you edit the paper)" } } },
+        { key = "gt", mode = "n", desc = "write missing / stale thoughts with the outline_model (cheap model, headless)" },
+        { key = "gT", mode = "n", desc = "same, through the paper's agent pane" },
+        { key = "gW", mode = "n", desc = "rewrite EVERY thought (e.g. after changing outline_words)" },
+        { key = "gF", mode = "n", desc = "flow check: the model flags gaps, repeats, forward references ..." } } },
       { name = "Session", hl = "Session", title = "Window", entries = {
-        { key = "s", mode = "n", desc = "sidebar <-> full tab" },
-        { key = "> <", mode = "n", desc = "wider / narrower sidebar (also <C-w>< <C-w>> or drag the border with the mouse)" },
-        { key = "|", mode = "n", desc = "toggle a wide sidebar (60% of the screen) and back" },
-        { key = "q", mode = "n", desc = "close" } } },
+        { key = "gw", mode = "n", desc = "sidebar <-> full tab" },
+        { key = "g> g< g|", mode = "n", desc = "wider / narrower sidebar / toggle a wide one (also <C-w>< <C-w>> or the mouse)" },
+        { key = "q", mode = "n", desc = "close (asks if the lines were edited but not committed)" } } },
     },
-    notes = { "~ stale thought (the block changed)   ∅ no thought yet   ⇅ moved in the plan   ◆ marked   ✂ cut" },
+    notes = { "~ stale thought   ∅ no thought yet   ⇅ moved in the plan   ◆ marked.  The first 12 characters of every line are a hidden id: do not edit them." },
   })
 end
 
@@ -602,49 +601,55 @@ end
 
 local function map(lhs, fn, desc) vim.keymap.set("n", lhs, fn, { buffer = S.buf, nowait = true, silent = true, desc = "redline overview: " .. desc }) end
 
+local function goto_current()
+  local v = cur_vis()
+  if v then show_node(by_hash()[v.n.hash] or v.n, true) end
+end
+
 local function setup_buffer()
   S.buf = vim.api.nvim_create_buf(false, true)
   vim.bo[S.buf].bufhidden = "hide"
+  vim.bo[S.buf].buftype = "acwrite" -- :w is ours: it commits the plan
   vim.bo[S.buf].filetype = "redline-outline"
-  vim.bo[S.buf].modifiable = false
+  vim.bo[S.buf].swapfile = false
   vim.api.nvim_buf_set_name(S.buf, "redline://overview")
-  map("<CR>", function() local v = cur_vis() if v then show_node(by_hash()[v.n.hash] or v.n, true) end end, "go to the paper")
-  map("o", function() local v = cur_vis() if v then show_node(by_hash()[v.n.hash] or v.n, true) end end, "go to the paper")
-  map("l", function() fold(true) end, "open")
-  map("h", function() fold(false) end, "close / parent")
+  map("<CR>", goto_current, "go to the paper")
+  map("<Tab>", function() fold(nil) end, "toggle fold")
+  map("zo", function() fold(true) end, "open")
+  map("zc", function() fold(false) end, "close")
   map("za", function() fold(nil) end, "toggle fold")
   map("zM", function() fold_all(true) end, "close all")
   map("zR", function() fold_all(false) end, "open all")
-  map("J", function() move_sibling(1) end, "move down")
-  map("K", function() move_sibling(-1) end, "move up")
-  map("x", cut, "cut")
-  map("p", function() paste("after") end, "paste after")
-  map("P", function() paste("before") end, "paste before")
-  map("gp", function() paste("into") end, "paste into the section")
-  map("u", plan_undo, "undo")
-  map("U", plan_reset, "discard the plan")
-  map("A", apply_plan, "apply the plan")
+  map("gA", apply_plan, "apply the plan")
+  map("gr", function() plan_reset() end, "discard the plan and reload")
   map("m", function()
     local v = cur_vis()
     if v and v.n.kind ~= "heading" then S.marks[v.n.hash] = (not S.marks[v.n.hash]) or nil; redraw_keep() end
   end, "mark")
-  map("M", function() edit_task("merge") end, "merge")
-  map("S", function() edit_task("split") end, "split")
-  map("r", function() model_task("refresh") end, "thoughts")
-  map("R", function() model_task("refresh", "pane") end, "thoughts via the agent pane")
-  map("W", function()
+  map("gm", function() edit_task("merge") end, "merge")
+  map("gs", function() edit_task("split") end, "split")
+  map("gt", function() model_task("refresh") end, "thoughts")
+  map("gT", function() model_task("refresh", "pane") end, "thoughts via the agent pane")
+  map("gW", function()
     if vim.fn.confirm("Rewrite EVERY thought (the current ones are dropped)?", "&Yes\n&No", 2) == 1 then model_task("refresh", nil, true) end
   end, "rewrite every thought")
-  map("f", function() model_task("flow") end, "flow check")
+  map("gF", function() model_task("flow") end, "flow check")
   map("]f", function() next_flag(1) end, "next flag")
   map("[f", function() next_flag(-1) end, "previous flag")
-  map("gr", function() fetch() end, "reload")
-  map("s", function() M.toggle_mode() end, "sidebar <-> tab")
-  map(">", function() resize(6) end, "wider")
-  map("<", function() resize(-6) end, "narrower")
-  map("|", toggle_wide, "wide <-> normal")
-  map("q", function() M.close() end, "close")
+  map("gw", function() M.toggle_mode() end, "sidebar <-> tab")
+  map("g>", function() resize(6) end, "wider")
+  map("g<", function() resize(-6) end, "narrower")
+  map("g|", toggle_wide, "wide <-> normal")
+  map("q", function()
+    if vim.bo[S.buf].modified and vim.fn.confirm("Lines were edited but not committed (:w). Close anyway?", "&Yes\n&No", 2) ~= 1 then return end
+    vim.bo[S.buf].modified = false
+    M.close()
+  end, "close")
   map("?", help, "help")
+  vim.api.nvim_create_autocmd("BufWriteCmd", { buffer = S.buf, callback = function()
+    commit()
+    vim.bo[S.buf].modified = false
+  end })
   vim.api.nvim_create_autocmd("CursorMoved", { buffer = S.buf, callback = follow })
   vim.api.nvim_create_autocmd("WinResized", { callback = function()  -- a manual resize (mouse, <C-w><) is kept
     if S.mode == "side" and M.is_open() and vim.tbl_contains(vim.v.event.windows or {}, S.win) and not S.wide then
@@ -661,7 +666,8 @@ local function open_window()
   end
   S.win = vim.api.nvim_get_current_win()
   vim.api.nvim_win_set_buf(S.win, S.buf)
-  for k, v in pairs({ wrap = true, linebreak = true, breakindent = true, number = false, relativenumber = false,
+  for k, v in pairs({ wrap = true, linebreak = true, breakindent = true, number = true, relativenumber = true, numberwidth = 3,
+    conceallevel = 3, concealcursor = "nvic",
     cursorline = true, signcolumn = "no", foldcolumn = "0", winfixwidth = S.mode == "side", list = false }) do
     vim.wo[S.win][k] = v
   end

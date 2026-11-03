@@ -261,11 +261,13 @@ def record_flow(items: list[dict[str, Any]]) -> str:
 
 @mcp.tool()
 def outline_plan() -> str:
-    """The human's draft reordering of the paper as a list of moves (empty when there is none).
-    Execute it with propose_move, one move at a time."""
+    """The human's draft plan for the paper: moves and deletions of blocks (empty when there is none).
+    Execute moves with propose_move and deletions with propose_delete, one at a time."""
     def go() -> str:
-        moves = _outline.plan_moves(svc().proj)
-        return _outline.plan_message(svc().proj) if moves else "no plan: the paper's order is the intended one"
+        proj = svc().proj
+        if not _outline.plan_moves(proj) and not _outline.plan_deletions(proj):
+            return "no plan: the paper's order is the intended one"
+        return _outline.plan_message(proj)
     return _safe(go)
 
 

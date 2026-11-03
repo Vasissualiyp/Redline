@@ -43,6 +43,7 @@ class Block:
     depth: int = 0
     level: int = 0           # headings: 1 section, 2 subsection, 3 subsubsection
     title: str = ""
+    number: str = ""        # headings: the section number as typeset ("3.4.1"; "" for starred)
     text: str = ""           # readable accepted text
     hash: str = ""
     parent: int = -1         # index of the enclosing heading or list block
@@ -197,7 +198,7 @@ def blocks(doc: Document) -> list[Block]:
         if sec is not None and _HEAD.match(line):
             close_para(a)
             end = _brace_end(src, first, hi)
-            mk("heading", a, end, level=sec.level, title=sec.title)
+            mk("heading", a, end, level=sec.level, title=sec.title, number=sec.number)
             while i < len(ls) and ls[i] < end:
                 i += 1
             continue
@@ -325,6 +326,7 @@ def build(proj: Project, doc: Document | None = None) -> dict:
         if t is None and k in carried:
             t, stale = carried[k], True
         node = {"index": k, "hash": b.hash, "kind": b.kind, "depth": b.depth, "level": b.level, "title": b.title,
+                "number": b.number,
                 "lines": [b.line_start, b.line_end], "text": b.text if b.kind != "heading" else b.title,
                 "thought": t["thought"] if t else None, "stale": stale, "model": t.get("model", "") if t else "",
                 "parent": b.parent, "flags": [f for f in flags if b.hash in f.get("hashes", [])], **b.counts()}
@@ -447,11 +449,24 @@ def record_flow(proj: Project, items: list[dict]) -> str:
 
 
 # ---- the user's plan: reordering as a draft ---------------------------------------------
-def set_plan(proj: Project, order: list[str] | None) -> str:
+def set_plan(proj: Project, plan) -> str:
+    """plan: None, a list of hashes (the wanted order), or {"order": [...], "deleted": [...]}."""
     store = load_store(proj)
-    store["plan"] = order
+    if isinstance(plan, list):
+        plan = {"order": plan, "deleted": []}
+    store["plan"] = plan
     save_store(proj, store)
-    return "plan cleared" if order is None else f"plan saved ({len(order)} nodes)"
+    return "plan cleared" if plan is None else \
+        f"plan saved ({len(plan['order'])} nodes, {len(plan.get('deleted', []))} deleted)"
+
+
+def _plan(store: dict, order) -> tuple[list[str] | None, list[str]]:
+    plan = order if order is not None else store.get("plan")
+    if isinstance(plan, list):
+        return plan, []
+    if isinstance(plan, dict):
+        return plan.get("order"), list(plan.get("deleted", []))
+    return None, []
 
 
 def _lcs_keep(a: list[str], b: list[str]) -> set[str]:
@@ -467,13 +482,15 @@ def plan_moves(proj: Project, order: list[str] | None = None) -> list[dict]:
     subsequence, each with the node it should follow."""
     o = build(proj)
     cur = [n["hash"] for n in o["nodes"]]
-    store = load_store(proj)
-    order = order if order is not None else store["plan"]
-    if not order or order == cur:
-        return []
     by = {n["hash"]: n for n in o["nodes"]}
+    order, deleted = _plan(load_store(proj), order)
+    if not order:
+        return []
     order = [h for h in order if h in by]
-    keep = _lcs_keep(cur, order)
+    cur_kept = [h for h in cur if h not in set(deleted)]
+    if order == cur_kept:
+        return []
+    keep = _lcs_keep(cur_kept, order)
     moves = []
     for k, h in enumerate(order):
         if h in keep:
@@ -486,19 +503,30 @@ def plan_moves(proj: Project, order: list[str] | None = None) -> list[dict]:
     return moves
 
 
+def plan_deletions(proj: Project) -> list[dict]:
+    o = build(proj)
+    by = {n["hash"]: n for n in o["nodes"]}
+    _, deleted = _plan(load_store(proj), None)
+    return [{"hash": h, "kind": by[h]["kind"], "text": (by[h]["thought"] or by[h]["text"])[:160], "lines": by[h]["lines"]}
+            for h in deleted if h in by and by[h]["kind"] != "heading"]
+
+
 def plan_message(proj: Project) -> str:
-    moves = plan_moves(proj)
-    if not moves:
+    moves, dels = plan_moves(proj), plan_deletions(proj)
+    if not moves and not dels:
         raise RedlineError("the plan changes nothing")
-    out = ["[redline] Reorder the paper to follow my outline plan. Do it with tracked moves only: propose_move for "
-           "each block (a whole paragraph, figure, list), keeping everything reviewable; do not rewrite the text "
-           "except where a move needs a one-line transition (add it as a tracked insert and tell me). Read the "
-           "paper first (outline_plan() gives these moves again with full context). After the moves, compile() "
-           "once and give me one line per move.", ""]
+    out = ["[redline] Change the paper to follow my outline plan. Tracked edits only: propose_move for each move (a whole "
+           "paragraph, figure, list), and propose_delete for each deletion, keeping everything reviewable; do not rewrite "
+           "the text except where a move needs a one-line transition (add it as a tracked insert and tell me). Read the "
+           "paper first (outline_plan() gives this plan again with full context). After the edits, compile() once and give "
+           "me one line per change.", ""]
     for m in moves:
         out.append(f"- move [{m['kind']}] «{m['text']}» (hash {m['hash']}, now l.{m['lines'][0]}-{m['lines'][1]}) "
                    f"to after «{m['after_text']}» (hash {m['after']}"
                    + (f", l.{m['after_lines'][1]}" if m["after_lines"] else "") + ")")
+    for d in dels:
+        out.append(f"- DELETE [{d['kind']}] «{d['text']}» (hash {d['hash']}, l.{d['lines'][0]}-{d['lines'][1]}): remove it "
+                   "from the paper as a tracked deletion; if other text refers to it, tell me instead of fixing silently")
     return "\n".join(out)
 
 
@@ -551,3 +579,70 @@ def thoughts_task(words: int = DEFAULT_WORDS) -> str:
     return (f"Call outline_pending(), write one very short thought ({words} words or fewer) per block it lists, and "
             "call record_thoughts once with all of them. If record_thoughts says some were too long, shorten and "
             "send those again. Repeat until nothing is pending. Do not edit the paper.")
+
+
+# ---- applying the plan without an agent ------------------------------------------------
+def apply_direct(proj: Project, origin: str = "overview plan") -> str:
+    """Execute the plan declaratively: every move and deletion becomes tracked markup (a
+    \\deleted here, an \\added there, a footnote each), in ONE journaled write (one undo).
+    Blocks keep their hash across a tracked move (hashes use the accepted text), so later
+    moves find them again. What cannot be done mechanically (a block that holds pending
+    changes, a destination inside markup) is skipped and reported."""
+    from . import author, ops
+    from .service import Service, _diff_edit
+    moves, dels = plan_moves(proj), plan_deletions(proj)
+    if not moves and not dels:
+        raise RedlineError("the plan changes nothing")
+    done: list[str] = []
+    skipped: list[str] = []
+
+    def fn(doc: Document):
+        done.clear()      # _edit evaluates fn more than once (citation check, then the write)
+        skipped.clear()
+        text = doc.src
+        for m in moves:
+            d = proj.doc(text)
+            bl = {b.hash: b for b in blocks(d)}
+            src = bl.get(m["hash"])
+            if src is None:
+                skipped.append(f"«{m['text'][:40]}»: not found any more")
+                continue
+            try:
+                if m["after"] is None:
+                    first = next((b for b in bl.values() if b.start > src.end or b.start < src.start), None)
+                    first = min((b for b in bl.values() if b is not src), key=lambda b: b.start, default=None)
+                    if first is None:
+                        continue
+                    edits = author.move_span(d, src.start, src.end, first.start, after=False, comment="outline plan",
+                                             trail="\n\n")
+                else:
+                    dst = bl.get(m["after"])
+                    if dst is None:
+                        skipped.append(f"«{m['text'][:40]}»: its destination block is gone")
+                        continue
+                    lead = "\n" if src.kind == "item" and dst.kind == "item" else "\n\n"
+                    edits = author.move_span(d, src.start, src.end, dst.end, after=True, comment="outline plan", lead=lead)
+                text = ops.apply(text, edits)
+                done.append(f"moved «{m['text'][:50]}»")
+            except RedlineError as e:
+                skipped.append(f"«{m['text'][:40]}»: {str(e).splitlines()[0][:100]}")
+        for dl in dels:
+            d = proj.doc(text)
+            b = next((x for x in blocks(d) if x.hash == dl["hash"]), None)
+            if b is None:
+                skipped.append(f"«{dl['text'][:40]}»: not found any more")
+                continue
+            try:
+                text = ops.apply(text, author.delete_span(d, b.start, b.end, "outline plan"))
+                done.append(f"deleted «{dl['text'][:50]}»")
+            except RedlineError as e:
+                skipped.append(f"«{dl['text'][:40]}»: {str(e).splitlines()[0][:100]}")
+        return [_diff_edit(doc.src, text)] if text != doc.src else []
+
+    Service(proj)._edit(fn, "outline plan (declarative)", origin)
+    if done:
+        set_plan(proj, None)  # applied: the paper is the plan now
+    msg = f"{len(done)} change(s) written as tracked markup (one undo): " + "; ".join(done[:8]) + ("; ..." if len(done) > 8 else "")
+    if skipped:
+        msg += "\nSKIPPED (do these by hand or with the agent): " + "; ".join(skipped)
+    return msg if done else "nothing could be applied mechanically: " + "; ".join(skipped)

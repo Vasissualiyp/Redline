@@ -79,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("overview", help="high-level overview: one thought per block (nvim: gO)")
     p.add_argument("action", nargs="?", default="show",
-                   choices=["show", "refresh", "flow", "plan-set", "plan-clear", "plan-message", "edit-message"])
+                   choices=["show", "refresh", "flow", "plan-set", "plan-clear", "plan-message", "plan-apply", "edit-message"])
     p.add_argument("--json", action="store_true")
     p.add_argument("--model", help="refresh/flow: a [models] entry (default: outline_model), or pane")
     p.add_argument("--all", action="store_true", help="refresh: drop every thought and rewrite them all")
@@ -349,7 +349,7 @@ def _run(a: argparse.Namespace) -> int:
                 return 0
             for n in o["nodes"]:
                 t = n["thought"] or "(no thought)"
-                print("  " * n["depth"] + (f"§ {n['title']}" if n["kind"] == "heading" else
+                print("  " * n["depth"] + (f"§ {n['number'] + ' ' if n['number'] else ''}{n['title']}" if n["kind"] == "heading" else
                                            f"[{n['kind']}] {t}{' ~' if n['stale'] else ''}  ({n['chars']}c {n['words']}w {n['nlines']}l)"))
             print(f"{o['total']} blocks, {o['missing']} without a thought, {o['stale']} stale, {o['flags']} flow flag(s)")
             return 0
@@ -361,6 +361,9 @@ def _run(a: argparse.Namespace) -> int:
             return 0
         if a.action == "plan-message":
             print(O.plan_message(proj))
+            return 0
+        if a.action == "plan-apply":
+            print(O.apply_direct(proj))
             return 0
         if a.action == "edit-message":
             print(O.edit_message(proj, a.op or "merge", [h for h in (a.hashes or "").split(",") if h], a.instruction))

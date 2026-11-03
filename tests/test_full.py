@@ -903,3 +903,85 @@ def test_a_hung_mount_does_not_block(tmp_path, monkeypatch):
     assert codeaccess.is_dir_within(tmp_path / "hung", 0.3) is None and time.time() - t0 < 2
     assert codeaccess.is_dir_within(tmp_path, 1) is True
     block.set()
+
+
+PLAN_TEX = r"""\documentclass{article}
+\begin{document}
+\section{One}
+Alpha paragraph says the first thing about stars forming in gas.
+
+Bravo paragraph says the second thing about turbulence and fields.
+
+Charlie paragraph says the third thing about radiation feedback.
+
+Delta paragraph says the fourth thing about the final mass function.
+\section{Two}
+Echo paragraph opens the second section with a different topic here.
+\end{document}
+"""
+
+
+def test_plan_applied_declaratively_as_tracked_markup(home):
+    from redline import outline
+    from redline.state import Project
+    d = make_paper(home)
+    (d / "main.tex").write_text(PLAN_TEX)
+    proj = Project.open(d)
+    o = outline.build(proj)
+    by = {n["text"].split()[0]: n["hash"] for n in o["nodes"] if n["kind"] == "paragraph"}
+    order = [n["hash"] for n in o["nodes"]]
+    # Delta moves up after Alpha; Charlie goes away
+    order.remove(by["Delta"])
+    order.insert(order.index(by["Alpha"]) + 1, by["Delta"])
+    outline.set_plan(proj, {"order": [h for h in order if h != by["Charlie"]], "deleted": [by["Charlie"]]})
+    msg = outline.apply_direct(proj)
+    src = (d / "main.tex").read_text()
+    assert msg.startswith("2 change(s) written"), msg   # Delta moved, Charlie deleted
+    assert "\\added{Delta paragraph" in src and "\\deleted{Delta paragraph" in src
+    assert "\\deleted{Charlie paragraph" in src and "\\added{Charlie" not in src
+    assert src.index("\\added{Delta paragraph") < src.index("Bravo paragraph") < src.index("\\deleted{Delta paragraph")
+    assert "Moved to" in src and "Moved here from" in src             # each move explains itself
+    assert outline.load_store(proj)["plan"] is None
+    # the reading order is now the plan: hashes follow the accepted text across the tracked move
+    after = [n["text"].split()[0] for n in outline.build(proj)["nodes"] if n["kind"] == "paragraph"]
+    assert after == ["Alpha", "Delta", "Bravo", "Echo"]
+    # one write, one undo
+    proj.undo()
+    assert (d / "main.tex").read_text() == PLAN_TEX
+
+
+def test_declarative_apply_reports_what_it_cannot_do(home):
+    from redline import outline
+    from redline.state import Project
+    d = make_paper(home)
+    (d / "main.tex").write_text(PLAN_TEX.replace("the third thing about radiation", "the third \\added{new} thing about radiation"))
+    proj = Project.open(d)
+    o = outline.build(proj)
+    by = {n["text"].split()[0]: n["hash"] for n in o["nodes"] if n["kind"] == "paragraph"}
+    order = [n["hash"] for n in o["nodes"] if n["hash"] != by["Charlie"]]
+    outline.set_plan(proj, {"order": order + [by["Charlie"]], "deleted": []})   # Charlie holds a pending change
+    msg = outline.apply_direct(proj)
+    assert "SKIPPED" in msg and "pending change" in msg or "nothing could be applied" in msg
+    assert "Charlie" in (d / "main.tex").read_text()
+
+
+def test_headings_carry_their_section_numbers(home):
+    from redline import outline
+    from redline.state import Project
+    d = make_paper(home)
+    (d / "main.tex").write_text(r"""\documentclass{article}
+\begin{document}
+\section{One}
+Alpha paragraph says the first thing about stars forming in gas.
+\subsection{Sub}
+Bravo paragraph says the second thing about turbulence and fields.
+\subsubsection{Deep}
+Charlie paragraph says the third thing about radiation feedback.
+\section*{Starred}
+Delta paragraph says the fourth thing about the final mass function.
+\section{Two}
+Echo paragraph opens the second section with a different topic here.
+\end{document}
+""")
+    nums = [(n["number"], n["title"]) for n in outline.build(Project.open(d))["nodes"] if n["kind"] == "heading"]
+    assert nums == [("1", "One"), ("1.1", "Sub"), ("1.1.1", "Deep"), ("", "Starred"), ("2", "Two")]

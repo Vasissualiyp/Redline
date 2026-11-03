@@ -511,7 +511,7 @@ and the confirmation says how many were skipped.
 ## High-level overview (`gO`)
 
 `gO` in review mode (`:Redline overview [tab]`) opens the paper as a tree of one-line **thoughts**: sections, then one
-node per paragraph (¶), figure (▣), table (▦), list (≡) with its items (•), equation (∑) and the abstract (A). Each row has fixed columns first, **l w c** (lines, words, chars, right-aligned so sizes line up; a section shows its totals), then the thought. It sits in a sidebar by default; `s`
+node per paragraph (¶), figure (▣), table (▦), list (≡) with its items (•), equation (∑) and the abstract (A). Headings show their number as typeset (`3.4.1  Title`). Each row has fixed columns first, **l w c** (lines, words, chars, right-aligned so sizes line up; a section shows its totals), then the thought. It sits in a sidebar by default; `s`
 toggles a full tab. Moving the cursor scrolls the paper to the block, highlights it there and **highlights the whole block
 in the PDF pane**.
 
@@ -521,16 +521,21 @@ in the PDF pane**.
   reading text does not invalidate it. Everything is in `.redline/outline.json`, outside the paper.
 - **Thoughts** are written by an agent through the MCP tools `outline_pending` / `record_thoughts`, with the model *you* pick for
   this job: `outline_model` in `.redline.toml` is an entry of `[models]` (default `deepseek`; `qwen-local`, `claude`, or
-  `pane` to use the agent pane). `r` runs it headless for the missing and stale blocks only (one batch); `R` goes through the
-  agent pane instead. `redline overview refresh [--model NAME]` does the same from a shell.
-- **Flow check:** `f` asks the model to read the *sequence of thoughts* (not the text) and flag real problems: gap, repeat,
+  `pane` to use the agent pane). `gt` runs it headless for the missing and stale blocks only (one batch); `gT` goes through the
+  agent pane instead, `gW` rewrites every thought. `redline overview refresh [--model NAME]` does the same from a shell.
+- **Flow check:** `gF` asks the model to read the *sequence of thoughts* (not the text) and flag real problems: gap, repeat,
   forward reference, weak transition, orphan figure. Flags show as red lines under the nodes (`]f` `[f` jump between them) and
   vanish when the blocks involved change.
-- **Rearranging is a draft plan:** `J`/`K` swap a block (or a section with its content) with its sibling, `x` cuts, `p`/`P`/`gp`
-  paste after / before / into a section, `u` undoes a step, `U` discards the plan; nodes you moved show `⇅`. The paper is not
-  touched. `A` hands the plan to the agent as **tracked moves** (`propose_move`), so every move stays reviewable.
-- **Merge / split:** `m` marks blocks, `M` asks the agent to merge the marked ones (or this one and the next) into one paragraph,
-  `S` to split the block under the cursor into several; both take a free-text instruction and produce tracked edits. The new
+- **Rearranging works like Oil:** the overview buffer is editable (number and relative numbers are on, every line has a
+  hidden id). `dd` a line (`50dd`, a visual block, or a folded section, which moves as a whole) and `p` it somewhere else
+  to **move** it; `dd` without pasting **deletes** the block; `:w` commits what you did into a draft plan (moved blocks
+  show `⇅`, the header counts moves and deletions; `u` undoes as usual, `gr` discards the plan). The paper is untouched
+  until `gA`, which offers two ways: **directly** (declaratively, no agent: every move becomes a tracked
+  `\deleted` here + `\added` there with a "Moved to / Moved here from" footnote, every deletion a tracked deletion, all in
+  one write you undo with one `u`; blocks holding pending changes or other things that cannot be done mechanically are skipped
+  and listed) or **hand it to the agent** (tracked `propose_move` / `propose_delete`, and it may add a transition).
+- **Merge / split:** `m` marks blocks, `gm` asks the agent to merge the marked ones (or this one and the next) into one paragraph,
+  `gs` to split the block under the cursor into several; both take a free-text instruction and produce tracked edits. The new
   paragraphs get fresh thoughts on the next `r`.
 - `?` inside lists the keys.
 
