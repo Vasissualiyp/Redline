@@ -434,8 +434,8 @@ animates while compiling (auto or manual) or syncing with Overleaf. On the comma
 `redline full` lists papers as leaves of a tree of categories you define (`~/.config/redline/categories.json`;
 nested with `/`: `Papers/Pop III`; their order and colour are yours; papers without one sit under *Uncategorized*, and with
 no categories at all the list stays flat). On the paper list: `h`/`l`/`enter` close and open a category (`h` on a
-paper jumps to its category), `C` new category (the cursor's category is the default parent), `e` edit (a category: name
-and colour; a paper: **category, strict refchecks on/off, code directory, notes, Overleaf project name**, `ctrl+s` saves;
+paper jumps to its category), `C` new category (the cursor's category is the default parent; the colour is picked from swatches, or typed as a name or `#rrggbb`), `e` edit (a category: name
+and colour; a paper: **category (with "+ New category…" in the list), strict refchecks on/off, code directory, notes, Overleaf project name**, `ctrl+s` saves;
 `e` also works inside a paper's quick menu), `J`/`K` move a category among its siblings or a paper within its category,
 `D` delete a category (its papers become uncategorized). A paper's category is the `category` key of its `.redline.toml`.
 From the shell: `redline full categories | cat-add NAME --color C | cat-color NAME C | cat-rm NAME |

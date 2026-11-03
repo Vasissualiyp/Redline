@@ -466,3 +466,59 @@ def test_cli_categories_and_set(home, capsys):
     assert "[Papers] (white)" in out and "  [Papers/Pop III] (cyan)" in out and "    - alpha" in out
     assert cli.main(["full", "cat-rm", "Papers"]) == 0
     assert config.load(a).category == ""
+
+
+def test_colour_picker_and_new_category_from_the_edit_screen(home):
+    from redline import categories
+    a = make_paper(home, "alpha")
+    from redline.fulltui import Full
+    import os
+    os.environ.pop("TMUX", None)
+
+    async def go():
+        app = Full()
+        async with app.run_test(size=(140, 50)) as pilot:
+            await pilot.pause(0.8)
+            await pilot.press("e")  # edit alpha (flat list: first row)
+            await pilot.pause(0.3)
+            assert app.screen.__class__.__name__ == "EditPaper"
+            sel = app.screen.query_one("#e-cat")
+            sel.value = "\x00new"                      # "+ New category…"
+            await pilot.pause(0.4)
+            assert app.screen.__class__.__name__ == "CategoryForm"
+            form = app.screen
+            form.query_one("#c-name").value = "Papers/Pop III"
+            lst = form.query_one("#swatches")
+            lst.highlighted = 5                         # cyan
+            await pilot.press("ctrl+s")
+            await pilot.pause(0.5)
+            assert app.screen.__class__.__name__ == "EditPaper"
+            assert app.screen.query_one("#e-cat").value == "Papers/Pop III"
+            await pilot.press("ctrl+s")
+            await pilot.pause(1.0)
+    asyncio.run(go())
+    assert config.load(a).category == "Papers/Pop III"
+    assert categories.load()["categories"] == [{"name": "Papers/Pop III", "color": "cyan"}]
+
+
+def test_category_form_typed_colour_wins_and_is_validated(home):
+    from redline.fulltui import CategoryForm, Full
+    import os
+    os.environ.pop("TMUX", None)
+    result = []
+
+    async def go():
+        app = Full()
+        async with app.run_test(size=(140, 50)) as pilot:
+            await pilot.pause(0.5)
+            app.push_screen(CategoryForm("New category", "X"), result.append)
+            await pilot.pause(0.3)
+            app.screen.query_one("#c-color").value = "nonsense"
+            await pilot.press("ctrl+s")
+            await pilot.pause(0.2)
+            assert app.screen.__class__.__name__ == "CategoryForm"   # refused
+            app.screen.query_one("#c-color").value = "#e5c07b"
+            await pilot.press("ctrl+s")
+            await pilot.pause(0.3)
+    asyncio.run(go())
+    assert result == [("X", "#e5c07b")]

@@ -343,7 +343,7 @@ class EditPaper(ModalScreen):
         with Vertical(id="ebox"):
             yield Label(f"[b]Edit[/] {escape(self.info.name)}\n[dim]{escape(str(self.info.path))}[/]")
             yield Label("Category")
-            yield Select([("(none)", ""), *[(c, c) for c in cats]], value=self.cfg.category, allow_blank=False, id="e-cat")
+            yield Select(self.options(cats), value=self.cfg.category, allow_blank=False, id="e-cat")
             yield Label("Strict refchecks: every new citation must be verified against Zotero")
             yield Switch(value=self.cfg.enforce_verification, id="e-verify")
             yield Label("Code directory (analysis code; relative paths are inside the paper)")
@@ -355,6 +355,33 @@ class EditPaper(ModalScreen):
             with Horizontal():
                 yield Button("Save (ctrl+s)", variant="primary", id="e-save")
                 yield Button("Cancel (esc)", id="e-cancel")
+
+    NEW = "\x00new"
+
+    def options(self, cats: list[str]) -> list[tuple[str, str]]:
+        return [("(none)", ""), *[(c, c) for c in cats], ("+ New category…", self.NEW)]
+
+    def on_select_changed(self, ev: Select.Changed) -> None:
+        if ev.select.id != "e-cat" or ev.value != self.NEW:
+            self.last = ev.value if ev.select.id == "e-cat" and ev.value != self.NEW else getattr(self, "last", "")
+            return
+        back = getattr(self, "last", self.cfg.category)
+
+        def made(res) -> None:
+            sel = self.query_one("#e-cat", Select)
+            if not res:
+                sel.value = back
+                return
+            try:
+                name = categories.add(*res)
+            except RedlineError as e:
+                self.app.say(str(e))  # exists already: choose it
+                name = categories.clean(res[0])
+            cats = categories.paths()
+            sel.set_options(self.options(cats))
+            sel.value = name
+            self.last = name
+        self.app.push_screen(CategoryForm("New category", ""), made)
 
     def _rel(self, d: str) -> str:
         try:
@@ -372,14 +399,22 @@ class EditPaper(ModalScreen):
                       "overleaf_project": q("#e-ol", Input).value.strip()})
 
 
-class CategoryForm(ModalScreen):
-    """A category's path (\"Papers/Pop III\": nested with /) and colour."""
+SWATCHES = [("red", "red"), ("orange", "orange3"), ("yellow", "yellow"), ("green", "green"),
+            ("mint", "spring_green2"), ("cyan", "cyan"), ("sky", "deep_sky_blue1"), ("blue", "blue"),
+            ("violet", "purple"), ("magenta", "magenta"), ("pink", "deep_pink3"), ("white", "white"),
+            ("grey", "bright_black")]
 
-    BINDINGS = [Binding("escape", "dismiss(None)", "Cancel")]
+
+class CategoryForm(ModalScreen):
+    """A category's path ("Papers/Pop III": nested with /) and its colour, picked from swatches
+    (or typed as a name / #rrggbb)."""
+
+    BINDINGS = [Binding("escape", "dismiss(None)", "Cancel"), Binding("ctrl+s", "save", "Save")]
     CSS = """
     CategoryForm { align: center middle; }
-    #cbox { width: 70; height: auto; border: round $accent; background: $surface; padding: 1 2; }
+    #cbox { width: 70; height: auto; max-height: 92%; border: round $accent; background: $surface; padding: 1 2; }
     #cbox Label { margin-top: 1; }
+    #swatches { height: 15; margin-top: 0; }
     """
 
     def __init__(self, title: str, name: str = "", color: str = ""):
@@ -391,17 +426,40 @@ class CategoryForm(ModalScreen):
             yield Label(f"[b]{self.title_text}[/]")
             yield Label("Name (use / to nest, e.g. Papers/Pop III)")
             yield Input(value=self.name0, id="c-name")
-            yield Label("Colour (a name like cyan or orange3, or #rrggbb)")
-            yield Input(value=self.color0, id="c-color")
+            yield Label("Colour: pick one (up/down, enter) ...")
+            yield OptionList(*[f"[{c}]████████[/]  {label}" for label, c in SWATCHES], id="swatches")
+            yield Label("... or type a colour name / #rrggbb (overrides the pick)")
+            custom = self.color0 if self.color0 and self.color0 not in [c for _, c in SWATCHES] else ""
+            yield Input(value=custom, placeholder="#e5c07b", id="c-color")
             yield Label("", id="c-err")
+            yield Label("[dim]ctrl+s saves, esc cancels[/]")
+
+    def on_mount(self) -> None:
+        lst = self.query_one("#swatches", OptionList)
+        names = [c for _, c in SWATCHES]
+        lst.highlighted = names.index(self.color0) if self.color0 in names else 0
+        self.query_one("#c-name", Input).focus()
 
     def on_input_submitted(self, ev: Input.Submitted) -> None:
+        if ev.input.id == "c-name":
+            self.query_one("#swatches", OptionList).focus()
+        else:
+            self.action_save()
+
+    def on_option_list_option_selected(self, ev: OptionList.OptionSelected) -> None:
+        self.query_one("#c-color", Input).value = ""  # the pick wins over an older typed colour
+        self.action_save()
+
+    def action_save(self) -> None:
         name = categories.clean(self.query_one("#c-name", Input).value)
-        color = self.query_one("#c-color", Input).value.strip()
+        typed = self.query_one("#c-color", Input).value.strip()
+        picked = SWATCHES[self.query_one("#swatches", OptionList).highlighted or 0][1]
+        color = typed or picked
+        err = self.query_one("#c-err", Label)
         if not name:
-            return self.query_one("#c-err", Label).update("[red]a name is needed[/]")
-        if color and not categories.valid_color(color):
-            return self.query_one("#c-err", Label).update(f"[red]{escape(color)} is not a colour[/]")
+            return err.update("[red]a name is needed[/]")
+        if not categories.valid_color(color):
+            return err.update(f"[red]{escape(color)} is not a colour[/]")
         self.dismiss((name, color))
 
 
