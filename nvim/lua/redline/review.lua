@@ -340,13 +340,37 @@ function M.send_notes()
   if not (st and st.data) then
     return vim.notify("redline: buffer not attached")
   end
-  local noted = vim.tbl_filter(function(it) return it.marker and it.marker.kind == "N" end, st.data.items)
-  local orphans = vim.tbl_filter(function(m) return m.kind == "N" end, st.data.orphan_markers or {})
+  local function has_text(m) return m and (m.note or ""):match("%S") ~= nil end
+  local noted, empty = {}, 0
+  for _, it in ipairs(st.data.items) do
+    if it.marker and it.marker.kind == "N" then
+      if has_text(it.marker) then
+        table.insert(noted, it)
+      else
+        empty = empty + 1 -- a bare %N: nothing to tell the agent
+      end
+    end
+  end
+  local orphans = {}
+  for _, m in ipairs(st.data.orphan_markers or {}) do
+    if m.kind == "N" then
+      if has_text(m) then
+        table.insert(orphans, m)
+      else
+        empty = empty + 1
+      end
+    end
+  end
   local n = #noted + #orphans
   if n == 0 then
-    return vim.notify("redline: no %N notes in the paper")
+    return vim.notify(empty > 0 and ("redline: %d %%N marker(s) have no note text, nothing to send (add the note after %%N)"):format(empty)
+      or "redline: no %N notes in the paper")
   end
-  if vim.fn.confirm(("Send %d %%N note(s) to the agent?"):format(n), "&Yes\n&No", 1) ~= 1 then
+  local ask = ("Send %d %%N note(s) to the agent?"):format(n)
+  if empty > 0 then
+    ask = ask .. ("\n(%d empty %%N marker(s) are left out)"):format(empty)
+  end
+  if vim.fn.confirm(ask, "&Yes\n&No", 1) ~= 1 then
     return
   end
   local lines = {

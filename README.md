@@ -504,3 +504,6 @@ the cursor reaches another change (nvim sends a new place), you page (`j k space
 line says "newer build ready: shown when you move on". The pane keeps its own copy of the build it shows (with its synctex
 file), so a resize redraws the same build. The quick menu in `redline full` works the same way: a finished compile refreshes
 the page only when you go to another change (or when the preview was showing a note such as "out of date").
+
+`N` (send all `%N` notes) only sends markers that carry note text; a bare `%N` (keep pending, nothing to say) is left out,
+and the confirmation says how many were skipped.
