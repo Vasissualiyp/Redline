@@ -893,16 +893,14 @@ def test_agent_can_find_and_read_the_code_dir(home, tmp_path, monkeypatch):
 
 
 def test_a_hung_mount_does_not_block(tmp_path, monkeypatch):
-    import threading, time
+    import time
     from redline import codeaccess
-    from pathlib import Path as P
-    block = threading.Event()
-    real = P.is_dir
-    monkeypatch.setattr(P, "is_dir", lambda self: block.wait(30) or real(self) if str(self).endswith("hung") else real(self))
-    t0 = time.time()
-    assert codeaccess.is_dir_within(tmp_path / "hung", 0.3) is None and time.time() - t0 < 2
-    assert codeaccess.is_dir_within(tmp_path, 1) is True
-    block.set()
+    with monkeypatch.context() as m:
+        m.setattr(codeaccess, "_probe_cmd", lambda p: ["sleep", "30"])   # a probe stuck in I/O
+        t0 = time.time()
+        assert codeaccess.is_dir_within(tmp_path, 0.3) is None and time.time() - t0 < 3
+    assert codeaccess.is_dir_within(tmp_path, 5) is True
+    assert codeaccess.is_dir_within(tmp_path / "missing", 5) is False
 
 
 PLAN_TEX = r"""\documentclass{article}

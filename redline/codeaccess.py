@@ -22,15 +22,25 @@ MAX_BYTES = 1_500_000
 MAX_LINES = 600
 
 
+def _probe_cmd(p: Path) -> list[str]:
+    return ["sh", "-c", 'test -d "$1"', "sh", str(p)]
+
+
 def is_dir_within(p: Path, seconds: float) -> bool | None:
     """Path.is_dir(), but None when it does not answer in time: a stale sshfs/NFS mount (cluster
-    scratch) blocks any access forever, and must not freeze `redline open` or an agent call."""
-    import threading
-    out: list[bool] = []
-    t = threading.Thread(target=lambda: out.append(p.is_dir()), daemon=True)  # daemon: never blocks exit
-    t.start()
-    t.join(seconds)
-    return out[0] if out else None
+    scratch) blocks any access in uninterruptible I/O. The probe runs in a child process, not a
+    thread: a thread stuck in the kernel keeps THIS process from exiting (redline open took five
+    minutes to return), a stuck child does not."""
+    import subprocess
+    try:
+        child = subprocess.Popen(_probe_cmd(p), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        return None
+    try:
+        return child.wait(timeout=seconds) == 0
+    except subprocess.TimeoutExpired:
+        child.kill()   # (it may linger in I/O wait; nothing here waits for it)
+        return None
 
 
 def root(proj: Project) -> Path:
