@@ -42,6 +42,7 @@ class View:
     page: int = 1
     zoom: float = 1.0
     crop: bool = False
+    fit: bool = True   # the whole page fits the pane (else: fit the width and scroll to the highlight)
     follow: bool = True
     rects: list[Rect] = field(default_factory=list)
     status: str = ""
@@ -91,15 +92,15 @@ def synctex_edit(pdf: Path, page: int, x: float, y: float) -> tuple[Path, int] |
     return Path(inp.group(1).strip()), int(line.group(1))
 
 
-def pdf_info(pdf: Path) -> tuple[int, float]:
-    """(page count, page width in pt)."""
+def pdf_info(pdf: Path) -> tuple[int, float, float]:
+    """(page count, page width in pt, page height in pt)."""
     try:
         out = subprocess.run(["pdfinfo", str(pdf)], capture_output=True, text=True, timeout=10).stdout
     except (OSError, subprocess.TimeoutExpired):
-        return 1, 612.0
+        return 1, 612.0, 792.0
     m = re.search(r"^Pages:\s+(\d+)", out, re.M)
-    w = re.search(r"^Page size:\s+([\d.]+) x", out, re.M)
-    return (int(m.group(1)) if m else 1), (float(w.group(1)) if w else 612.0)
+    w = re.search(r"^Page size:\s+([\d.]+) x ([\d.]+)", out, re.M)
+    return (int(m.group(1)) if m else 1), (float(w.group(1)) if w else 612.0), (float(w.group(2)) if w else 792.0)
 
 
 def cell_size() -> tuple[int, int]:
@@ -137,6 +138,7 @@ class Pane:
         self.mtime = 0.0
         self.pages = 1
         self.page_w = 612.0
+        self.page_h = 792.0
         self.drawn_size = (0, 0)
         self.prefetch: list[View] = []
         self.windows: dict[int, tuple[float, float]] = {}  # page -> visible (top, bottom) in pt
@@ -160,20 +162,20 @@ class Pane:
         v = self.view
         v.page = max(1, min(v.page, self.pages))
         err = self._display(v, cols, rows)
-        flags = " ".join(x for x in ("follow" if v.follow else "", "crop" if v.crop else "",
+        flags = " ".join(x for x in ("follow" if v.follow else "", "crop" if v.crop else "", "" if v.fit else "width",
                                      f"zoom {v.zoom:.1f}" if v.zoom != 1 else "") if x)
         pages = v.shown if len(v.shown) == 2 else (v.page,)
         where = f"p.{pages[0]}–{pages[1]}" if len(pages) == 2 else f"p.{v.page}"
         self._status(err or f"{where}/{self.pages}  {flags}  {v.status}")
         # what is likely shown next: the neighbouring pages, sent while you read
-        self.prefetch = [View(page=pg, zoom=v.zoom, crop=v.crop) for pg in (v.page + 1, v.page - 1)
+        self.prefetch = [View(page=pg, zoom=v.zoom, crop=v.crop, fit=v.fit) for pg in (v.page + 1, v.page - 1)
                          if 1 <= pg <= self.pages and not v.shown]
 
     def _key(self, v: View, cols: int, rows: int) -> tuple:
         pages = v.shown if len(v.shown) == 2 else (v.page,)
         marked = tuple((r.page, round(r.x0), round(r.y0), round(r.x1), round(r.y1))
                        for r in v.rects if r.page in pages)
-        return (str(self.pdf), self.mtime, pages, marked, round(v.zoom, 3), v.crop, cols, rows, cell_size())
+        return (str(self.pdf), self.mtime, pages, marked, round(v.zoom, 3), v.crop, v.fit, cols, rows, cell_size())
 
     def _display(self, v: View, cols: int, rows: int, show: bool = True) -> str:
         """Send (unless kitty has it already) and show the image for view v. Returns an error or ""."""
@@ -226,7 +228,9 @@ class Pane:
         marked = [r for r in v.rects if r.page in pages]
         # resolution: fit the page width to the pane, times zoom (crop zooms in 2x)
         zoom = v.zoom * (2.0 if v.crop and marked else 1.0)
-        dpi = max(30, min(600, int(px_w / (self.page_w / 72.0) * zoom)))
+        whole = v.fit and not v.crop and v.zoom == 1.0 and len(pages) == 1   # the full page, highlight and all
+        by_width = px_w / (self.page_w / 72.0)
+        dpi = max(30, min(600, int((min(by_width, px_h / (self.page_h / 72.0)) if whole else by_width) * zoom)))
         s = dpi / 72.0
         imgs = []
         for pg in pages:
@@ -468,7 +472,9 @@ class Pane:
         elif k == "-":
             v.zoom = max(1.0, v.zoom / 1.25)
         elif k == "0":
-            v.zoom, v.crop = 1.0, False
+            v.zoom, v.crop, v.fit = 1.0, False, True
+        elif k == "w":
+            v.fit = not v.fit  # whole page <-> page width with a scroll to the highlight
         elif k == "z":
             v.crop = not v.crop
         elif k == "f":
@@ -494,7 +500,7 @@ class Pane:
             return False
         if m != self.mtime:
             self.mtime = m
-            self.pages, self.page_w = pdf_info(self.pdf)
+            self.pages, self.page_w, self.page_h = pdf_info(self.pdf)
             return True
         return False
 

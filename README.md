@@ -213,7 +213,8 @@ prints a report, `redline evidence list|get ID|sync` work with the library, and
 |---|---|
 | `e` / Enter | jump to the LaTeX source of what is shown: nvim's cursor goes to the highlighted change, or to the first line of text in view, and tmux switches to the paper pane |
 | `j`/`k`, space/`b`, `g`/`G` | next / previous / first / last page |
-| `+` `-` `0` `z` | zoom in / out / fit / crop around the highlight |
+| `+` `-` `0` `z` | zoom in / out / reset to the whole page / crop around the highlight |
+| `w` | whole page fitted to the pane (default) <-> page width, scrolled to the highlight (readable in a short pane) |
 | `f` | follow the nvim cursor on/off |
 | `r` / `q` | redraw / quit |
 
