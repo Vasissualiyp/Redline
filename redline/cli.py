@@ -77,6 +77,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-verification", action="store_true",
                    help="this project does not cite papers that must be refchecked against Zotero")
 
+    p = sub.add_parser("overview", help="high-level overview: one thought per block (nvim: gO)")
+    p.add_argument("action", nargs="?", default="show",
+                   choices=["show", "refresh", "flow", "plan-set", "plan-clear", "plan-message", "edit-message"])
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--model", help="refresh/flow: a [models] entry (default: outline_model), or pane")
+    p.add_argument("--op", choices=["merge", "split"], help="edit-message")
+    p.add_argument("--hashes", help="edit-message: comma separated block hashes")
+    p.add_argument("--instruction", default="", help="edit-message: what you want")
+
     p = sub.add_parser("sessions", help="switch this running paper between one tmux session and two (PDF alone)")
     p.add_argument("to", nargs="?", choices=["one", "two", "toggle", "status"], default="toggle")
     p.add_argument("--save", action="store_true", help="also make it the paper's setting (two_sessions)")
@@ -324,6 +333,38 @@ def _run(a: argparse.Namespace) -> int:
             return 0
         win = L.find_window(a.session) if a.session else None
         print(L.cycle(-1 if a.prev else 1, win) if (a.next or a.prev) else L.apply(a.name, win))
+        return 0
+    if a.cmd == "overview":
+        from . import outline as O
+        from . import outline_agent as OA
+        from .state import Project as P
+        proj = P.open()
+        if a.action == "show":
+            o = O.build(proj)
+            if a.json:
+                print(json.dumps(o))
+                return 0
+            for n in o["nodes"]:
+                t = n["thought"] or "(no thought)"
+                print("  " * n["depth"] + (f"§ {n['title']}" if n["kind"] == "heading" else
+                                           f"[{n['kind']}] {t}{' ~' if n['stale'] else ''}  ({n['chars']}c {n['words']}w {n['nlines']}l)"))
+            print(f"{o['total']} blocks, {o['missing']} without a thought, {o['stale']} stale, {o['flags']} flow flag(s)")
+            return 0
+        if a.action == "plan-set":
+            print(O.set_plan(proj, json.loads(sys.stdin.read())))
+            return 0
+        if a.action == "plan-clear":
+            print(O.set_plan(proj, None))
+            return 0
+        if a.action == "plan-message":
+            print(O.plan_message(proj))
+            return 0
+        if a.action == "edit-message":
+            print(O.edit_message(proj, a.op or "merge", [h for h in (a.hashes or "").split(",") if h], a.instruction))
+            return 0
+        from .spin import spinning
+        with spinning("asking the model" if (a.model or proj.cfg.outline_model) != "pane" else "sending to the agent"):
+            print((OA.refresh if a.action == "refresh" else OA.flow)(proj, a.model))
         return 0
     if a.cmd == "sessions":
         from . import config

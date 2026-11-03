@@ -542,6 +542,7 @@ local REVIEW_KEYS = {
   { "n", "A", function() M.resolve_range("accept", false) end, "accept section (or heading under cursor)" },
   { "x", "A", function() M.resolve_range("accept", true) end, "accept selection" },
   { "n", "R", function() M.resolve_range("reject", false) end, "reject section" },
+  { "n", "gO", function() require("redline.outline").toggle() end, "high-level overview: one thought per paragraph (tree; s: tab)" },
   { "n", "gS", function() M.sessions("toggle") end, "switch between one tmux session and two (PDF in its own)" },
   { "n", "gh", M.home, "back to the redline full list (all papers)" },
   { "n", "gA", M.accept_all_unmarked, "accept ALL edits, ignoring %Y/%N/%X (asks first)" },
@@ -587,7 +588,7 @@ local HELP_GROUPS = {
   { name = "Verify", hl = "Verify", title = "Check claims and references", keys = { "s", "S", "E" } },
   { name = "Build", hl = "Build", title = "Compile and the PDF", keys = { "c", "T", "p", "f", "W" } },
   { name = "Sync", hl = "Sync", title = "Overleaf", keys = { "O", "P", "L", "Q" } },
-  { name = "Session", hl = "Session", title = "Session and leaving", keys = { "gS", "gh", "i", "q", "<Esc>", "?" } },
+  { name = "Session", hl = "Session", title = "Session and leaving", keys = { "gO", "gS", "gh", "i", "q", "<Esc>", "?" } },
 }
 
 function M.help()

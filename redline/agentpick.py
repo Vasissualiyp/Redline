@@ -123,6 +123,32 @@ def _session() -> str | None:
     return r.stdout.strip() or None
 
 
+def prepare(proj: Project, entry: dict) -> None:
+    """MCP configs current and the entry's opencode settings (provider overrides) merged in,
+    without making it the pane's model: for headless one-off runs."""
+    from .launcher import write_mcp_config
+    write_mcp_config(proj)
+    if kind(entry) == "opencode" and entry.get("opencode"):
+        path = proj.cfg.root / "opencode.json"
+        data = json.loads(path.read_text()) if path.exists() else {}
+        _merge(data, entry["opencode"])
+        path.write_text(json.dumps(data, indent=2) + "\n")
+
+
+def headless_command(entry: dict, prompt: str) -> list[str]:
+    """argv that runs the entry once, non-interactively, with the Redline tools allowed."""
+    exe = entry["cmd"].split()[0]
+    if kind(entry) == "opencode":
+        cmd = [exe, "run", "--standalone", "--auto"]
+        if entry.get("model"):
+            cmd += ["-m", entry["model"]]
+        return cmd + [prompt]
+    cmd = [exe, "-p", "--allowedTools", "mcp__redline"]
+    if entry.get("model"):
+        cmd += ["--model", entry["model"]]
+    return cmd + [prompt]
+
+
 def switch(proj: Project, name: str, session: str | None = None, force: bool = False) -> str:
     from .launcher import in_login_shell, write_mcp_config
     if name not in proj.cfg.models:

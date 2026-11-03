@@ -54,6 +54,9 @@ auto_sync_poll = 120
 # second monitor or terminal). The PDF follows the editor exactly as a pane would; quitting either
 # closes both. Attach the PDF one with `redline open --pdf`.
 two_sessions = false
+# The overview (`gO` in nvim): which [models] entry writes the one-line "thoughts" and runs the flow
+# check, headless. A cheap model is plenty: "deepseek", "qwen-local", ... or "pane" for the agent pane.
+outline_model = "deepseek"
 # Shell command run before pushing (e.g. rsync fresh plots into light/).
 pre_push = ""
 compile_timeout = 600
@@ -136,6 +139,7 @@ class Config:
     cross_paper_access: bool = True
     single_editor: bool = False
     two_sessions: bool = False
+    outline_model: str = "deepseek"
     auto_sync_seconds: int = 20
     auto_sync_poll: int = 120
     category: str = ""      # tree path in the `redline full` list, e.g. "Papers/Pop III"
@@ -213,7 +217,8 @@ def load(root: Path | None = None) -> Config:
     legacy.update(data.get("legacy", {}))
     cfg = Config(root=root, main=main)
     for k in ("code_dir", "agent", "agent_kind", "layout", "tmux_quit_key", "ols", "overleaf_project",
-              "keep_comment_regex", "pre_push", "evidence_collection", "tmux_model_key", "category", "notes"):
+              "keep_comment_regex", "pre_push", "evidence_collection", "tmux_model_key", "category", "notes",
+              "outline_model"):
         if k in data:
             setattr(cfg, k, str(data[k]))
     if "enforce_verification" in data:

@@ -10,6 +10,7 @@ from mcp.server.mcpserver import Context, MCPServer
 from .model import RedlineError
 from .service import Service
 from . import others as _others
+from . import outline as _outline
 from .state import Project
 
 INSTRUCTIONS = """\
@@ -48,6 +49,9 @@ reject every suggestion from their editor. Rules:
   paper_changes / paper_search read them (to keep papers consistent, reuse a derivation, check what a
   coauthor paper claims). You cannot edit another paper from here: say what should change there.
   A paper with cross_paper_access = false is private, in both directions.
+- Overview: outline_pending() / record_thoughts() write one-sentence thoughts per block (never edit the paper
+  for that), outline_overview() / record_flow() judge the narrative flow, outline_plan() is the human's
+  draft reordering to be executed with propose_move.
 - Pending changes are addressed by id (stable hash like a3f9c2) or label (C12;
   labels renumber after every edit, ids do not).
 - Run compile() after a batch of edits and fix what it reports. lint(fix=true) fixes
@@ -190,6 +194,43 @@ def paper_changes(paper: str, selector: dict[str, Any] | None = None, full: bool
 def paper_search(query: str, paper: str | None = None, regex: bool = False) -> str:
     """Search the .tex/.bib of one other paper, or of every shared paper (case-insensitive)."""
     return _safe(lambda: _others.search(svc().proj, query, paper, regex))
+
+
+# ---- the overview: thoughts per paragraph (outline) ------------------------------
+@mcp.tool()
+def outline_pending(limit: int = 40) -> str:
+    """Blocks (paragraphs, figures, list items, equations) that still need a one-sentence 'thought',
+    with their text. Answer with record_thoughts. Does not edit the paper."""
+    return _safe(lambda: _outline.pending(svc().proj, limit))
+
+
+@mcp.tool()
+def record_thoughts(items: list[dict[str, Any]], ctx: Context | None = None) -> str:
+    """Store thoughts: items = [{hash, thought}] (hash from outline_pending; thought one sentence, <= 25 words)."""
+    return _safe(lambda: _outline.record(svc().proj, items, _origin(ctx, None)))
+
+
+@mcp.tool()
+def outline_overview() -> str:
+    """The paper as its sequence of thoughts (with hashes), for judging whether the narrative flows."""
+    return _safe(lambda: _outline.overview(svc().proj))
+
+
+@mcp.tool()
+def record_flow(items: list[dict[str, Any]]) -> str:
+    """Store narrative-flow flags: items = [{hash or hashes, kind: gap|repeat|forward-ref|weak-transition|
+    orphan-figure|other, note}]. Replaces the previous agent flags."""
+    return _safe(lambda: _outline.record_flow(svc().proj, items))
+
+
+@mcp.tool()
+def outline_plan() -> str:
+    """The human's draft reordering of the paper as a list of moves (empty when there is none).
+    Execute it with propose_move, one move at a time."""
+    def go() -> str:
+        moves = _outline.plan_moves(svc().proj)
+        return _outline.plan_message(svc().proj) if moves else "no plan: the paper's order is the intended one"
+    return _safe(go)
 
 
 # ---- proposing -------------------------------------------------------------------

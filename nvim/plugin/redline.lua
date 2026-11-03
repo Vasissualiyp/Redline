@@ -13,6 +13,7 @@ local subcommands = {
   fix = function() require("redline.review").fix_with_agent() end,
   push = function() require("redline.review").push() end,
   pull = function() require("redline.review").pull() end,
+  overview = function(args) require("redline.outline").open(args and args[2] == "tab" and "tab" or "side") end,
   sessions = function(args) require("redline.review").sessions(args and args[2] or "toggle") end,
   full = function() require("redline.review").home() end,
   acceptall = function() require("redline.review").accept_all() end,

@@ -681,3 +681,138 @@ def test_switch_between_one_and_two_sessions_while_running(tmp_path, monkeypatch
             launcher.switch_sessions(root, "two")
     finally:
         subprocess.run(["tmux", "kill-server"], capture_output=True)
+
+
+OUTLINE_TEX = r"""\documentclass{article}
+\begin{document}
+\title{T}
+\maketitle
+\begin{abstract}
+We study many things in this short abstract about stars forming.
+\end{abstract}
+\section{Intro}
+Stars form from gas clouds \citep{abel02} and this is a paragraph with enough words.
+
+Second paragraph here talks about turbulence and magnetic fields in detail.
+\begin{figure}
+\includegraphics{plots/dens.png}
+\caption{Density of the cloud.}\label{fig:d}
+\end{figure}
+\begin{itemize}
+\item First point about accretion rates and their scaling.
+\item Second point about radiative feedback from the protostar.
+\end{itemize}
+\subsection{Details}
+\begin{equation}
+a = b + c
+\end{equation}
+Third paragraph \added{with a pending addition} ends here.
+\end{document}
+"""
+
+
+def test_outline_blocks_hashes_and_stale_thoughts(home):
+    from redline import outline
+    from redline.state import Project
+    d = make_paper(home)
+    (d / "main.tex").write_text(OUTLINE_TEX)
+    proj = Project.open(d)
+    o = outline.build(proj)
+    kinds = [(n["kind"], n["depth"]) for n in o["nodes"]]
+    assert kinds == [("abstract", 0), ("heading", 0), ("paragraph", 1), ("paragraph", 1), ("figure", 1), ("list", 1),
+                     ("item", 2), ("item", 2), ("heading", 1), ("equation", 2), ("paragraph", 2)]   # no title block
+    assert o["total"] == 9 and o["missing"] == 9
+    fig = next(n for n in o["nodes"] if n["kind"] == "figure")
+    assert "Caption: Density" in fig["text"] and fig["nlines"] == 4 and fig["words"] > 3
+    # thoughts attach to hashes; an agent writes them through record
+    hs = [n["hash"] for n in o["nodes"] if n["kind"] != "heading"]
+    assert outline.record(proj, [{"hash": hs[0], "thought": "Why stars matter"}, {"hash": "nope", "thought": "x"}], "m1").endswith("nope")
+    assert outline.build(proj)["missing"] == 8
+    assert hs[1] in outline.pending(proj)
+    # editing a paragraph keeps its old thought, stale; the hash decides
+    para = next(n for n in o["nodes"] if n["kind"] == "paragraph")
+    outline.record(proj, [{"hash": para["hash"], "thought": "Stars form from gas"}])
+    (d / "main.tex").write_text(OUTLINE_TEX.replace("this is a paragraph with enough words", "this sentence changed a lot"))
+    o2 = outline.build(proj)
+    p2 = next(n for n in o2["nodes"] if n["kind"] == "paragraph")
+    assert p2["hash"] != para["hash"] and p2["thought"] == "Stars form from gas" and p2["stale"] is True
+    outline.record(proj, [{"hash": p2["hash"], "thought": "Stars form from clouds"}])
+    assert next(n for n in outline.build(proj)["nodes"] if n["hash"] == p2["hash"])["stale"] is False
+    # accepting the pending addition does not change the paragraph's hash (hash = accepted text)
+    last = next(n for n in o2["nodes"] if n["kind"] == "paragraph" and "pending addition" in n["text"])
+    (d / "main.tex").write_text((d / "main.tex").read_text().replace("\\added{with a pending addition}", "with a pending addition"))
+    assert next(n for n in outline.build(proj)["nodes"] if n["lines"][0] == last["lines"][0])["hash"] == last["hash"]
+
+
+def test_outline_flow_plan_and_agent_messages(home):
+    from redline import outline
+    from redline.state import Project
+    d = make_paper(home)
+    (d / "main.tex").write_text(OUTLINE_TEX)
+    proj = Project.open(d)
+    o = outline.build(proj)
+    body = [n for n in o["nodes"] if n["kind"] != "heading"]
+    outline.record(proj, [{"hash": n["hash"], "thought": f"thought {i}"} for i, n in enumerate(body)])
+    assert "thought 0" in outline.overview(proj)
+    assert outline.record_flow(proj, [{"hashes": [body[1]["hash"], body[2]["hash"]], "kind": "gap", "note": "missing step"}]) == "recorded 1 flow flag(s)"
+    flagged = [n for n in outline.build(proj)["nodes"] if n["flags"]]
+    assert len(flagged) == 2 and flagged[0]["flags"][0]["kind"] == "gap"
+    # a plan: the figure moves before the second paragraph
+    order = [n["hash"] for n in o["nodes"]]
+    fig_i = next(i for i, n in enumerate(o["nodes"]) if n["kind"] == "figure")
+    plan = order[:3] + [order[fig_i]] + order[3:fig_i] + order[fig_i + 1:]
+    moves = outline.plan_moves(proj, plan)
+    assert [m["hash"] for m in moves] == [order[fig_i]] and moves[0]["after"] == order[2]
+    outline.set_plan(proj, plan)
+    assert "propose_move" in outline.plan_message(proj) and order[fig_i] in outline.plan_message(proj)
+    # merge / split messages
+    m = outline.edit_message(proj, "merge", [body[0]["hash"], body[1]["hash"]], "make it one paragraph")
+    assert "ONE paragraph" in m and "make it one paragraph" in m and body[1]["hash"] in m
+    s = outline.edit_message(proj, "split", [body[2]["hash"]])
+    assert "Split this block" in s
+    with pytest.raises(Exception):
+        outline.edit_message(proj, "merge", [body[0]["hash"]])
+    from redline import mcp_server
+    assert "record_thoughts" in mcp_server.INSTRUCTIONS
+
+
+def test_outline_refresh_runs_the_chosen_model_headless(home, tmp_path):
+    import stat, sys
+    from redline import outline, outline_agent
+    from redline.state import Project
+    d = make_paper(home)
+    (d / "main.tex").write_text(OUTLINE_TEX)
+    fake = tmp_path / "fakemodel"
+    repo = Path(__file__).resolve().parent.parent
+    fake.write_text(f"#!{sys.executable}\nimport sys, pathlib\nsys.path.insert(0, {str(repo)!r})\n"
+                    "from redline import outline\nfrom redline.state import Project\n"
+                    "p = Project.open(pathlib.Path.cwd())\n"
+                    "import re\nitems = [{'hash': n['hash'], 'thought': 'about ' + n['text'][:20]} for n in outline.build(p)['nodes'] if n['kind'] != 'heading']\n"
+                    "print(outline.record(p, items, 'fake'))\nprint('args:', sys.argv[1:4])\n")
+    fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+    t = d / ".redline.toml"
+    t.write_text(t.read_text() + f'\n[models.fake]\nlabel = "Fake"\ncmd = "{fake}"\n')
+    proj = Project.open(d)
+    assert proj.cfg.outline_model == "deepseek" and "fake" in proj.cfg.models
+    lines = []
+    msg = outline_agent.refresh(proj, "fake", stream=lines.append)
+    assert "9 of 9 thought(s) written" in msg and any("recorded 9" in l for l in lines)
+    assert any("-p" in l for l in lines)                      # a claude-style entry runs headless with -p
+    assert outline.build(proj)["missing"] == 0
+    assert outline_agent.refresh(proj, "fake") == "every thought is up to date"
+    with pytest.raises(Exception, match="not in \\[models\\]"):
+        outline_agent.refresh(proj, "nope") if False else outline_agent.run(proj, "x", "nope")
+    # the flow check needs thoughts first
+    first = next(n for n in outline.build(proj)["nodes"] if n["kind"] != "heading")
+    (d / "main.tex").write_text(OUTLINE_TEX.replace("We study many things", "We study entirely different things"))
+    with pytest.raises(Exception, match="up-to-date thought"):
+        outline_agent.flow(proj, "fake")
+
+
+def test_agentpick_headless_commands():
+    from redline import agentpick
+    oc = {"cmd": "opencode --standalone", "model": "deepseek/deepseek-flash#high"}
+    assert agentpick.headless_command(oc, "do it") == ["opencode", "run", "--standalone", "--auto", "-m",
+                                                       "deepseek/deepseek-flash#high", "do it"]
+    assert agentpick.headless_command({"cmd": "claude", "model": "haiku"}, "hi") == [
+        "claude", "-p", "--allowedTools", "mcp__redline", "--model", "haiku", "hi"]

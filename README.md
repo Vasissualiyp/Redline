@@ -507,3 +507,30 @@ the page only when you go to another change (or when the preview was showing a n
 
 `N` (send all `%N` notes) only sends markers that carry note text; a bare `%N` (keep pending, nothing to say) is left out,
 and the confirmation says how many were skipped.
+
+## High-level overview (`gO`)
+
+`gO` in review mode (`:Redline overview [tab]`) opens the paper as a tree of one-line **thoughts**: sections, then one
+node per paragraph (¶), figure (▣), table (▦), list (≡) with its items (•), equation (∑) and the abstract (A). Each shows its
+thought and, dimmed, its counts (`1,232c 162w 20l`; sections show their total words). It sits in a sidebar by default; `s`
+toggles a full tab. Moving the cursor scrolls the paper to the block, highlights it there and **highlights the whole block
+in the PDF pane**.
+
+- **Hashes:** every block is hashed from its *accepted* text (pending `\added/\deleted/\replaced` resolved, comments, review
+  markers and `% VERIFIED` lines ignored). Edit a paragraph and its thought turns stale: still shown, dimmed and marked `~`
+  (it is carried over from the old wording), until refreshed. Accepting or rejecting an edit that changes nothing in the
+  reading text does not invalidate it. Everything is in `.redline/outline.json`, outside the paper.
+- **Thoughts** are written by an agent through the MCP tools `outline_pending` / `record_thoughts`, with the model *you* pick for
+  this job: `outline_model` in `.redline.toml` is an entry of `[models]` (default `deepseek`; `qwen-local`, `claude`, or
+  `pane` to use the agent pane). `r` runs it headless for the missing and stale blocks only (one batch); `R` goes through the
+  agent pane instead. `redline overview refresh [--model NAME]` does the same from a shell.
+- **Flow check:** `f` asks the model to read the *sequence of thoughts* (not the text) and flag real problems: gap, repeat,
+  forward reference, weak transition, orphan figure. Flags show as red lines under the nodes (`]f` `[f` jump between them) and
+  vanish when the blocks involved change.
+- **Rearranging is a draft plan:** `J`/`K` swap a block (or a section with its content) with its sibling, `x` cuts, `p`/`P`/`gp`
+  paste after / before / into a section, `u` undoes a step, `U` discards the plan; nodes you moved show `⇅`. The paper is not
+  touched. `A` hands the plan to the agent as **tracked moves** (`propose_move`), so every move stays reviewable.
+- **Merge / split:** `m` marks blocks, `M` asks the agent to merge the marked ones (or this one and the next) into one paragraph,
+  `S` to split the block under the cursor into several; both take a free-text instruction and produce tracked edits. The new
+  paragraphs get fresh thoughts on the next `r`.
+- `?` inside lists the keys.
