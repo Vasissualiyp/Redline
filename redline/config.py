@@ -41,6 +41,9 @@ evidence_collection = "Redline evidence/{{paper}}"
 # % VERIFIED line); lint flags citations without one. Only the human turns it off, for
 # projects that are not about cited literature (`redline verification off`); agents must not.
 enforce_verification = {enforce_verification}
+# Agents may read your other papers (outline, text, changes, search) through the Redline tools,
+# and the other papers' agents may read this one. false = this paper is private to its own agent.
+cross_paper_access = true
 # Shell command run before pushing (e.g. rsync fresh plots into light/).
 pre_push = ""
 compile_timeout = 600
@@ -120,6 +123,7 @@ class Config:
     models: dict[str, dict] = field(default_factory=lambda: dict(DEFAULT_MODELS))
     tmux_model_key: str = "A"
     enforce_verification: bool = True
+    cross_paper_access: bool = True
     category: str = ""      # tree path in the `redline full` list, e.g. "Papers/Pop III"
     notes: str = ""
     mcp_extra: dict[str, list[str]] = field(default_factory=lambda: {"zotero": ["zotero-mcp"]})
@@ -200,6 +204,8 @@ def load(root: Path | None = None) -> Config:
             setattr(cfg, k, str(data[k]))
     if "enforce_verification" in data:
         cfg.enforce_verification = bool(data["enforce_verification"])
+    if "cross_paper_access" in data:
+        cfg.cross_paper_access = bool(data["cross_paper_access"])
     if "compile_timeout" in data:
         cfg.compile_timeout = int(data["compile_timeout"])
     if "merge_timeout" in data:

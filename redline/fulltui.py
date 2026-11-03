@@ -346,6 +346,8 @@ class EditPaper(ModalScreen):
             yield Select(self.options(cats), value=self.cfg.category, allow_blank=False, id="e-cat")
             yield Label("Strict refchecks: every new citation must be verified against Zotero")
             yield Switch(value=self.cfg.enforce_verification, id="e-verify")
+            yield Label("Agents may read your other papers (and they may read this one)")
+            yield Switch(value=self.cfg.cross_paper_access, id="e-cross")
             yield Label("Code directory (analysis code; relative paths are inside the paper)")
             yield Input(value=self.cfg.code_dir and str(self._rel(self.cfg.code_dir)), id="e-code")
             yield Label("Notes")
@@ -394,7 +396,7 @@ class EditPaper(ModalScreen):
 
     def action_save(self) -> None:
         q = self.query_one
-        self.dismiss({"category": q("#e-cat", Select).value or "", "enforce_verification": q("#e-verify", Switch).value,
+        self.dismiss({"category": q("#e-cat", Select).value or "", "enforce_verification": q("#e-verify", Switch).value, "cross_paper_access": q("#e-cross", Switch).value,
                       "code_dir": q("#e-code", Input).value.strip(), "notes": q("#e-notes", Input).value.strip(),
                       "overleaf_project": q("#e-ol", Input).value.strip()})
 

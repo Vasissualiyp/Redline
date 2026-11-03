@@ -194,12 +194,12 @@ def _categories_cmd(a: argparse.Namespace) -> int:
         print("removed " + ", ".join(gone))
     else:  # set NAME key=value
         key, _, val = (a.extra or "").partition("=")
-        if key not in ("category", "notes", "enforce_verification", "code_dir", "overleaf_project") or not _:
+        if key not in ("category", "notes", "enforce_verification", "cross_paper_access", "code_dir", "overleaf_project") or not _:
             print("usage: redline full set NAME key=value (category, notes, enforce_verification, code_dir, "
                   "overleaf_project)", file=sys.stderr)
             return 2
         root = registry.find(a.name)
-        config.set_key(root, key, val.lower() in ("true", "1", "yes", "on") if key == "enforce_verification" else val)
+        config.set_key(root, key, val.lower() in ("true", "1", "yes", "on") if key in ("enforce_verification", "cross_paper_access") else val)
         print(f"{root.name}: {key} = {val}")
     return 0
 

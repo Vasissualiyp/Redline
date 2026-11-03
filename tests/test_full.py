@@ -522,3 +522,25 @@ def test_category_form_typed_colour_wins_and_is_validated(home):
             await pilot.pause(0.3)
     asyncio.run(go())
     assert result == [("X", "#e5c07b")]
+
+
+def test_agents_can_read_other_papers_unless_private(home):
+    from redline import others
+    from redline.state import Project
+    a, b, c = make_paper(home, "alpha"), make_paper(home, "beta"), make_paper(home, "gamma")
+    (b / "main.tex").write_text("\\documentclass{article}\n\\begin{document}\n\\section{Method}\nThe Toomre parameter is Q.\n\\end{document}\n")
+    config.set_key(b, "category", "Papers")
+    config.set_key(c, "cross_paper_access", False)
+    me = Project.open(a)
+    listing = others.papers(me)
+    assert "beta" in listing and "[Papers]" in listing and "gamma  [private]" in listing
+    assert "Toomre parameter" in others.read(me, "beta", "Method")
+    assert "Method" in others.outline(me, "beta")
+    assert "main.tex:4" in others.search(me, "toomre") and "gamma" not in others.search(me, "Hello")
+    with pytest.raises(Exception, match="private"):
+        others.read(me, "gamma")
+    config.set_key(a, "cross_paper_access", False)       # a closed paper's own agent sees nothing either
+    with pytest.raises(Exception, match="turned off"):
+        others.papers(Project.open(a))
+    from redline import mcp_server
+    assert "paper_read" in mcp_server.INSTRUCTIONS

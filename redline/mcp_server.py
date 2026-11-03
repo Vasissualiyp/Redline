@@ -9,6 +9,7 @@ from mcp.server.mcpserver import Context, MCPServer
 
 from .model import RedlineError
 from .service import Service
+from . import others as _others
 from .state import Project
 
 INSTRUCTIONS = """\
@@ -43,6 +44,10 @@ reject every suggestion from their editor. Rules:
   human's setting (enforce_verification in .redline.toml): never change it yourself. Only when the human explicitly
   says not to check, pass unchecked_reason (the result is marked % UNVERIFIED). lint()
   flags new citations that have no result line.
+- Other papers (read-only): papers() lists the human's other papers; paper_outline / paper_read /
+  paper_changes / paper_search read them (to keep papers consistent, reuse a derivation, check what a
+  coauthor paper claims). You cannot edit another paper from here: say what should change there.
+  A paper with cross_paper_access = false is private, in both directions.
 - Pending changes are addressed by id (stable hash like a3f9c2) or label (C12;
   labels renumber after every edit, ids do not).
 - Run compile() after a batch of edits and fix what it reports. lint(fix=true) fixes
@@ -150,6 +155,41 @@ def review_notes() -> str:
 def status() -> str:
     """Counts of pending items, markers and lint errors."""
     return _safe(lambda: str(svc().status()))
+
+
+# ---- the other papers (read-only) -----------------------------------------------
+@mcp.tool()
+def papers() -> str:
+    """The papers of the human's `redline full` list (name, category, pending changes, notes).
+    Use the name with the paper_* tools. Read-only: edits to another paper go through that
+    paper's own agent."""
+    return _safe(lambda: _others.papers(svc().proj))
+
+
+@mcp.tool()
+def paper_outline(paper: str) -> str:
+    """Section tree of another paper (name or part of it, from papers())."""
+    return _safe(lambda: _others.outline(svc().proj, paper))
+
+
+@mcp.tool()
+def paper_read(paper: str, section: str | None = None, first_line: int | None = None,
+               last_line: int | None = None) -> str:
+    """Read another paper with line numbers: a section (fuzzy) or a line range (read-only)."""
+    lines = [first_line, last_line] if first_line else None
+    return _safe(lambda: _others.read(svc().proj, paper, section, lines))
+
+
+@mcp.tool()
+def paper_changes(paper: str, selector: dict[str, Any] | None = None, full: bool = False) -> str:
+    """Pending changes of another paper (same selector as list_changes; read-only)."""
+    return _safe(lambda: _others.changes(svc().proj, paper, selector, full))
+
+
+@mcp.tool()
+def paper_search(query: str, paper: str | None = None, regex: bool = False) -> str:
+    """Search the .tex/.bib of one other paper, or of every shared paper (case-insensitive)."""
+    return _safe(lambda: _others.search(svc().proj, query, paper, regex))
 
 
 # ---- proposing -------------------------------------------------------------------

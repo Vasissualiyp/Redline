@@ -443,3 +443,11 @@ set PAPER key=value`.
 
 **Back to the list from a paper's editor:** `gh` in review mode (`<prefix>H`, `:Redline full`) switches the tmux client
 back to the window running `redline full`, or starts a `redline-full` session if it isn't running (`redline full back`).
+
+## Agents and the other papers
+
+An agent in one paper can read the others in your `redline full` list, read-only: `papers()` (name, category, pending
+changes, notes), `paper_outline`, `paper_read`, `paper_changes` and `paper_search` (one paper or all). Edits to another
+paper still go through that paper's own session. `cross_paper_access = false` in a paper's `.redline.toml` (a switch in its
+edit screen, or `redline full set PAPER cross_paper_access=false`) makes it private in both directions: its agent sees no
+other paper and no other agent sees it. Restart the agent (or its MCP server) once to pick up the new tools.
