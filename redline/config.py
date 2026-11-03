@@ -62,6 +62,8 @@ outline_model = "deepseek"
 outline_words = 10
 # A block shorter than this many words is never flagged "split recommended", however many ideas it lists.
 outline_split_words = 200
+# ... and each part of a recommended split must itself be at least this long (words).
+outline_split_part_words = 60
 # When every thought is written, the same cheap model reads them all together and recommends
 # rearrangements and merges (and knows which paragraphs it wanted split). false = only on request.
 outline_review = true
@@ -150,6 +152,7 @@ class Config:
     outline_model: str = "deepseek"
     outline_words: int = 10
     outline_split_words: int = 200
+    outline_split_part_words: int = 60
     outline_review: bool = True
     auto_sync_seconds: int = 20
     auto_sync_poll: int = 120
@@ -240,6 +243,8 @@ def load(root: Path | None = None) -> Config:
         cfg.single_editor = bool(data["single_editor"])
     if "outline_review" in data:
         cfg.outline_review = bool(data["outline_review"])
+    if "outline_split_part_words" in data:
+        cfg.outline_split_part_words = max(20, int(data["outline_split_part_words"]))
     if "outline_split_words" in data:
         cfg.outline_split_words = max(60, int(data["outline_split_words"]))
     if "outline_words" in data:

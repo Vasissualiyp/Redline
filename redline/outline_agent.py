@@ -71,9 +71,28 @@ def refresh(proj: Project, model: str | None = None, stream=None, everything: bo
             return msg
     elif not (review or (review is None and proj.cfg.outline_review and (everything or hashes))):
         return msg
-    if review if review is not None else proj.cfg.outline_review:
+    want_review = review if review is not None else proj.cfg.outline_review
+    if want_review or outline.split_candidates(proj):
+        msg += "; " + split_check(proj, model, stream)      # long blocks: should they be split?
+    if want_review:
         return msg + "; " + suggest(proj, model, stream)
     return msg
+
+
+def split_check(proj: Project, model: str | None = None, stream=None) -> str:
+    """Long blocks cut into numbered sentences: the model decides which hold separate substantial ideas."""
+    o = outline.build(proj)
+    if o["missing"] or o["stale"]:
+        raise RedlineError(f"{o['missing'] + o['stale']} block(s) have no up-to-date thought: refresh the thoughts first")
+    todo = len(outline.split_candidates(proj, o))
+    if not todo:
+        return "no long block to check for a split"
+    for _ in range(max(1, -(-todo // 6)) + 1):          # outline_splits_pending hands out 6 blocks per call
+        run(proj, outline.split_task(), model, stream)
+        if not outline.split_candidates(proj):
+            break
+    after = outline.build(proj)
+    return f"{todo - len(outline.split_candidates(proj))} of {todo} long block(s) checked, {after['splits']} split(s) recommended"
 
 
 def suggest(proj: Project, model: str | None = None, stream=None, scope: list[str] | None = None) -> str:

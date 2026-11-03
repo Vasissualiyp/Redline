@@ -79,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("overview", help="high-level overview: one thought per block (nvim: gO)")
     p.add_argument("action", nargs="?", default="show",
-                   choices=["show", "refresh", "flow", "review", "dismiss", "plan-set", "plan-clear", "plan-message", "plan-apply", "edit-message"])
+                   choices=["show", "refresh", "flow", "review", "splits", "dismiss", "plan-set", "plan-clear", "plan-message", "plan-apply", "edit-message"])
     p.add_argument("--json", action="store_true")
     p.add_argument("--model", help="refresh/flow: a [models] entry (default: outline_model), or pane")
     p.add_argument("--all", action="store_true", help="refresh: drop every thought and rewrite them all")
@@ -378,6 +378,8 @@ def _run(a: argparse.Namespace) -> int:
                 hashes = [h for h in (a.hashes or "").split(",") if h]
                 print(OA.refresh(proj, a.model, everything=a.all, hashes=hashes or None,
                                  review=False if a.no_review else None))
+            elif a.action == "splits":
+                print(OA.split_check(proj, a.model))
             elif a.action == "review":
                 print(OA.suggest(proj, a.model, scope=[h for h in (a.hashes or "").split(",") if h] or None))
             else:

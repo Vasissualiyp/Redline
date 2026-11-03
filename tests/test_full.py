@@ -1139,3 +1139,49 @@ def test_scoped_review_only_touches_the_selection(home):
     notes = sorted(x["note"] for n in outline.build(proj)["nodes"] for x in n["suggestions"])
     assert notes == ["new on C", "old rec on A", "old rec on B"]          # the earlier ones about A and B stay
     assert "IN SCOPE" not in outline.overview(proj)
+
+
+def test_split_pass_checks_sizes_and_memory_of_dismissals(home):
+    from redline import outline
+    from redline.state import Project
+    d = make_paper(home)
+    a = " ".join(f"Alpha sentence number {i} talks about the density of gas in the disk." for i in range(1, 15))     # ~140 words
+    b = " ".join(f"Beta sentence number {i} then turns to magnetic fields and their growth." for i in range(1, 15))    # ~120 words
+    c = " ".join(f"Gamma sentence {i} is a short remark about a different thing." for i in range(1, 6))
+    (d / "main.tex").write_text("\\documentclass{article}\n\\begin{document}\n\\section{S}\n" + a + " " + b + "\n\n" + c +
+                                "\n\nDelta closes the argument with a summary of the whole story told here today.\n\\end{document}\n")
+    proj = Project.open(d)
+    nodes = [n for n in outline.build(proj)["nodes"] if n["kind"] == "paragraph"]
+    big, small, last = nodes
+    outline.record(proj, [{"hash": x["hash"], "thought": f"t{i}"} for i, x in enumerate(nodes)])
+    # the pending list shows the long block in FULL, as numbered sentences
+    sp = outline.splits_pending(proj)
+    assert "s28:" in sp and "Beta sentence number 14" in sp and small["hash"] not in sp
+    # the model's boundaries are checked: a 2-sentence "part" is folded away, two real parts survive
+    msg = outline.record_splits(proj, [{"hash": big["hash"], "parts": [
+        {"idea": "gas density", "from": 1, "to": 14}, {"idea": "tiny", "from": 15, "to": 16}, {"idea": "magnetic fields", "from": 17, "to": 28}]}])
+    assert msg.startswith("1 split recommendation(s)")
+    node = {n["hash"]: n for n in outline.build(proj)["nodes"]}[big["hash"]]
+    assert node["split"] == ["gas density", "magnetic fields"] or len(node["split"]) == 2 and node["split_at"][0] == 1
+    assert "the parts start at" in outline.edit_message(proj, "split", [big["hash"]])
+    assert not outline.split_candidates(proj)                                  # checked: not asked again
+    # a thin split is refused (kept whole), however confident the model is
+    outline.forget_blocks(proj, [big["hash"]])
+    outline.record(proj, [{"hash": big["hash"], "thought": "t0"}])
+    assert outline.record_splits(proj, [{"hash": big["hash"], "parts": [
+        {"idea": "x", "from": 1, "to": 27}, {"idea": "y", "from": 28, "to": 28}]}]).startswith("0 split recommendation(s), 1 block")
+    # memory: a dismissed merge is never recommended again; two substantial neighbours are never merged
+    outline.record_suggestions(proj, [{"op": "merge", "hashes": [small["hash"], last["hash"]], "note": "fragments"}])
+    outline.dismiss(proj, [small["hash"]])
+    msg = outline.record_suggestions(proj, [{"op": "merge", "hashes": [small["hash"], last["hash"]], "note": "again"}])
+    assert msg.startswith("recorded 0") and "you kept these apart" in msg
+    outline.record_suggestions(proj, [])
+    ok = outline.record_suggestions(proj, [{"op": "merge", "hashes": [big["hash"], small["hash"]], "note": "a short fragment"}])
+    assert ok.startswith("recorded 1")                                  # a 50-word neighbour may be a fragment
+    outline.MERGE_MIN = 40                                              # (what counts as substantial is a constant)
+    try:
+        msg = outline.record_suggestions(proj, [{"op": "merge", "hashes": [big["hash"], small["hash"]], "note": "same"}])
+    finally:
+        outline.MERGE_MIN = 80
+    assert "deliberate" in msg and msg.startswith("recorded 0")
+    assert "keep apart" in outline.overview(proj)

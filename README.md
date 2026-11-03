@@ -579,3 +579,17 @@ one write, like `redline undo`). A reload or commit is never an undo step of its
 the cheap model reviews only those blocks, with the whole sequence as context (the selected ones are marked `<< IN SCOPE`
 in what it reads), and recommends moves and merges that involve them. It replaces only the recommendations about the selected
 blocks; the others stay. `redline overview review --hashes h1,h2` does the same from a shell.
+
+### Why splits were never recommended (fixed) and how merges are kept sane
+
+- **Long blocks are read in full.** The thought writer used to see only the first 900 characters of a block, so a 500-word
+  paragraph was summarised from its opening alone and could never look like two ideas. Blocks over `outline_split_words`
+  (200) are now shown in full (up to 7000 characters).
+- **A separate split check** (`gB`, and automatically after the thoughts): each long block is cut into numbered sentences and the
+  model answers, per block, with parts (`idea`, `from`, `to` sentence numbers) or none. The sizes are checked in code, not
+  trusted: a part under `outline_split_part_words` (60) is folded into its neighbour and fewer than two parts means "keep whole".
+  Checked blocks are not asked again until their text changes; `gs` then tells the agent where each part starts.
+- **Merges respect your decisions.** Dismissing a merge (`gd`) records those blocks as *kept apart* and a dismissed move
+  leaves that block where it is; neither returns after a re-review. Two neighbouring paragraphs that each have 80+ words are
+  never recommended for merging (the model is told merges are only for repeated points or tiny fragments), and blocks
+  you kept apart are marked `(keep apart)` in what the model reads.

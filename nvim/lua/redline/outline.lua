@@ -613,6 +613,7 @@ end
 local function model_task(action, model, everything, hashes, scope)
   if S.busy then return vim.notify("redline overview: busy (" .. S.busy .. ")") end
   local label = (action == "flow" and "checking the flow") or (action == "review" and "reviewing the structure")
+    or (action == "splits" and "looking for blocks to split")
     or "writing thoughts"
   busy("⠿ " .. label)
   local stop = require("redline.spinner").start(label)
@@ -879,6 +880,7 @@ local function help()
         { key = "]f [f", mode = "n", desc = "next / previous flow flag" },
         { key = "]s [s", mode = "n", desc = "next / previous ✂ split recommendation (long block, separate substantial ideas)" } } },
       { name = "Verify", hl = "Verify", title = "Recommendations from the model (split ✂, move / merge ⇢)", entries = {
+        { key = "gB", mode = "n", desc = "check the LONG blocks (200+ words) for splits: each is read in full, in numbered sentences" },
         { key = "gv", mode = "n", desc = "review the whole sequence of thoughts: recommend moves and merges (also runs after the thoughts)" },
         { key = "gv", mode = "x", desc = "in visual mode: recommendations only for the SELECTED part (a section brings its content), the rest is context" },
         { key = "ga", mode = "n", desc = "accept the recommendation here: a move goes into the draft plan, a merge marks the blocks" },
@@ -961,6 +963,7 @@ local function setup_buffer()
   map("gC", reclassify_all, "force a full reclassification")
   map("gF", function() model_task("flow") end, "flow check")
   map("gv", function() model_task("review") end, "review the structure: moves and merges")
+  map("gB", function() model_task("splits") end, "check the long blocks for splits")
   vim.keymap.set("x", "gv", review_selection, { buffer = S.buf, nowait = true, silent = true,
     desc = "redline overview: recommendations for the selected part" })
   map("gR", rerun_block, "run this block through the model again")

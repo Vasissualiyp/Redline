@@ -254,6 +254,20 @@ def outline_overview() -> str:
 
 
 @mcp.tool()
+def outline_splits_pending(limit: int = 6) -> str:
+    """Long blocks (paragraphs of 200+ words) cut into numbered sentences, for deciding which should be split.
+    Answer with record_splits. Does not edit the paper."""
+    return _safe(lambda: _outline.splits_pending(svc().proj, limit))
+
+
+@mcp.tool()
+def record_splits(items: list[dict[str, Any]]) -> str:
+    """Store split decisions: items = [{hash, parts: [{idea, from, to}, ...]}] (from/to are sentence numbers, parts
+    in order and covering the block; parts: [] keeps it whole). Parts that are too short are folded into a neighbour."""
+    return _safe(lambda: _outline.record_splits(svc().proj, items))
+
+
+@mcp.tool()
 def record_suggestions(items: list[dict[str, Any]]) -> str:
     """Store structural recommendations from the thought sequence: items = [{op: "move", hash, after (hash or
     null = the start), note}, {op: "merge", hashes: [...], note}]. Replaces your earlier ones; [] is fine."""

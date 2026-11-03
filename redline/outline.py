@@ -267,7 +267,7 @@ def load_store(proj: Project) -> dict:
     except (OSError, ValueError):
         data = {}
     for k, v in (("thoughts", {}), ("last", []), ("flags", []), ("plan", None), ("suggestions", []),
-                 ("review_scope", None)):
+                 ("review_scope", None), ("apart", []), ("fixed", [])):
         data.setdefault(k, v)
     return data
 
@@ -350,6 +350,7 @@ def build(proj: Project, doc: Document | None = None) -> dict:
                 "lines": [b.line_start, b.line_end], "text": b.text if b.kind != "heading" else b.title,
                 "thought": t["thought"] if t else None, "stale": stale, "model": t.get("model", "") if t else "",
                 "split": (t.get("split") if t and not stale and not t.get("split_dismissed") else None),
+                "split_at": (t.get("split_at") if t and not stale and not t.get("split_dismissed") else None),
                 "suggestions": [x for x in store.get("suggestions", [])
                                 if x["hashes"][0] == b.hash and not x.get("dismissed") and set(x["hashes"]) <= hashes],
                 "parent": b.parent, "review": review_stats(doc, b.start, b.end), "flags": [f for f in flags if b.hash in f.get("hashes", [])], **b.counts()}
@@ -429,7 +430,8 @@ def pending(proj: Project, limit: int = 40) -> str:
                 break
         out.append(f"- hash {n['hash']} [{n['kind']}, §{sec}, {n['words']}w, l.{n['lines'][0]}]"
                    + (f" (old thought, now stale: «{n['thought']}»)" if n["stale"] else ""))
-        out.append("    " + n["text"][:900])
+        # a long block in full: the first 900 characters of a 500-word paragraph describe only its start
+        out.append("    " + n["text"][: 7000 if n["words"] >= split_words(proj) else 900])
     return "\n".join(out)
 
 
@@ -476,7 +478,9 @@ def overview(proj: Project) -> str:
     """The sequence of thoughts, for a flow check (not the full text). During a scoped review the
     blocks the human selected are marked "<< IN SCOPE"."""
     o = build(proj)
-    scope = set(load_store(proj).get("review_scope") or [])
+    store_ = load_store(proj)
+    scope = set(store_.get("review_scope") or [])
+    apart = {h for g in store_["apart"] for h in g}
     out = []
     for n in o["nodes"]:
         pad = "  " * n["depth"]
@@ -486,7 +490,8 @@ def overview(proj: Project) -> str:
             t = n["thought"] or "(no thought yet)"
             out.append(f"{pad}- {n['hash']} [{n['kind']}, {n['words']}w] {t}" + (" (stale)" if n["stale"] else "")
                        + (f" (split recommended: {' | '.join(n['split'])})" if n.get("split") else "")
-                       + (" << IN SCOPE" if n["hash"] in scope else ""))
+                       + (" << IN SCOPE" if n["hash"] in scope else "")
+                       + (" (keep apart)" if n["hash"] in apart else ""))
     return "\n".join(out)
 
 
@@ -614,6 +619,10 @@ def edit_message(proj: Project, op: str, hashes: list[str], instruction: str = "
         out.append(f"- [{n['kind']}] hash {n['hash']}, l.{n['lines'][0]}-{n['lines'][1]}, {n['words']}w"
                    + (f", thought: «{n['thought']}»" if n["thought"] else "")
                    + (f", suggested split into: {' | '.join(n['split'])}" if op == "split" and n.get("split") else ""))
+        if op == "split" and n.get("split") and (n.get("split_at") or []):
+            sens = sentences(n["text"])
+            starts = [sens[i - 1][:60] for i in n["split_at"] if 0 < i <= len(sens)]
+            out.append("    the parts start at: " + " || ".join(f"«{x}…»" for x in starts))
         out.append("    " + n["text"][:1500])
     return "\n".join(out)
 
@@ -642,6 +651,11 @@ def dismiss(proj: Project, hashes: list[str]) -> str:
             if x["hashes"][0] == h and not x.get("dismissed"):
                 x["dismissed"] = True
                 n += 1
+                # a dismissal is a decision: the author wants these apart / this block where it is
+                if x["op"] == "merge" and x["hashes"] not in store["apart"]:
+                    store["apart"].append(list(x["hashes"]))
+                if x["op"] == "move" and h not in store["fixed"]:
+                    store["fixed"].append(h)
     save_store(proj, store)
     return f"dismissed {n} recommendation(s)"
 
@@ -656,6 +670,7 @@ def forget_blocks(proj: Project, hashes: list[str]) -> str:
 
 
 SUGGEST_OPS = ("move", "merge")
+MERGE_MIN = 80   # two neighbouring paragraphs this long are separate on purpose
 
 
 def record_suggestions(proj: Project, items: list[dict]) -> str:
@@ -679,6 +694,9 @@ def record_suggestions(proj: Project, items: list[dict]) -> str:
             if h not in known or (after and after not in known) or h == after or known[h]["kind"] == "heading":
                 bad.append(h or "?")
                 continue
+            if h in store["fixed"]:
+                bad.append(f"{h} (you left it where it is)")
+                continue
             hs = [h]
             entry = {"op": "move", "hashes": hs, "after": after or None}
         elif op == "merge":
@@ -688,6 +706,15 @@ def record_suggestions(proj: Project, items: list[dict]) -> str:
                 continue
             order = [x["hash"] for x in o["nodes"]]
             hs.sort(key=order.index)
+            if any(len(set(hs) & set(g)) >= 2 for g in store["apart"]):
+                bad.append(f"{hs[0]} (you kept these apart)")
+                continue
+            # neighbouring paragraphs that each have substance are separate on purpose
+            adj = [(a, b) for a, b in zip(hs, hs[1:]) if order.index(b) - order.index(a) == 1
+                   and known[a]["words"] >= MERGE_MIN and known[b]["words"] >= MERGE_MIN]
+            if adj:
+                bad.append(f"{hs[0]} (adjacent paragraphs, both over {MERGE_MIN} words: deliberate)")
+                continue
             entry = {"op": "merge", "hashes": hs}
         else:
             bad.append(str(op))
@@ -729,6 +756,110 @@ def review_task(proj: Project, scope: list[str] | None = None) -> str:
             "may be better split first,\n"
             "Be selective: a few strong recommendations, not a rewrite; leave sound order alone. Call record_suggestions "
             "once with [{op, ...}] (an empty list is a fine answer). Do not edit the paper.")
+
+
+_ABBREV = re.compile(r"(?:\bet al|\bFig|\bfigs|\bEq|\bEqs|\bSec|\bTab|\be\.g|\bi\.e|\bcf|\bvs|\bapprox|\bca|\bno)\.$", re.I)
+
+
+def sentences(text: str) -> list[str]:
+    """A block's readable text cut into sentences (abbreviations like 'et al.' do not end one)."""
+    parts, cur = [], ""
+    for tok in text.split(" "):
+        cur = (cur + " " + tok).strip()
+        if re.search(r"[.!?][\"')\]]*$", tok) and not _ABBREV.search(tok):
+            parts.append(cur)
+            cur = ""
+    if cur:
+        parts.append(cur)
+    return parts
+
+
+def split_part_words(proj: Project) -> int:
+    return max(20, int(getattr(proj.cfg, "outline_split_part_words", 60)))
+
+
+def split_candidates(proj: Project, o: dict | None = None) -> list[dict]:
+    """Long blocks that have a thought and have not been checked for a split yet."""
+    o = o or build(proj)
+    thoughts = load_store(proj)["thoughts"]
+    return [n for n in o["nodes"] if n["kind"] in ("paragraph", "abstract", "item") and n["words"] >= split_words(proj)
+            and n["thought"] is not None and not n["stale"]
+            and not thoughts.get(n["hash"], {}).get("split_checked")]
+
+
+def splits_pending(proj: Project, limit: int = 6) -> str:
+    cand = split_candidates(proj)
+    if not cand:
+        return "no long block waits for a split check"
+    out = [f"{len(cand)} long block(s) to check (showing {min(limit, len(cand))}). Each is cut into numbered sentences. "
+           "Decide for EACH whether it holds two or more SEPARATE ideas that are each substantial on their own "
+           f"(at least {split_part_words(proj)} words each: e.g. a long paragraph that describes two figure panels at length, "
+           "or a methods paragraph followed by a different result). Related ideas that a reader wants together are NOT a "
+           "split, and neither is one idea told at length. Answer once with record_splits([{hash, parts: [{idea, from, to}, "
+           "...]}]): parts cover the sentences in order (from/to are sentence numbers, 'idea' a phrase of 8 words or fewer); "
+           "use \"parts\": [] when the block should stay whole. Include every hash listed.", ""]
+    for n in cand[:limit]:
+        out.append(f"- hash {n['hash']} [{n['kind']}, {n['words']}w, l.{n['lines'][0]}] thought: «{n['thought']}»")
+        for i, sen in enumerate(sentences(n["text"]), 1):
+            out.append(f"    s{i}: {sen[:600]}")
+    return "\n".join(out)
+
+
+def record_splits(proj: Project, items: list[dict]) -> str:
+    """Store the model's split decisions; the sizes are checked here, not trusted: every part must have its own
+    substance (outline_split_part_words), else it is folded into its neighbour; fewer than two parts = no split."""
+    o = build(proj)
+    by = {n["hash"]: n for n in o["nodes"]}
+    store = load_store(proj)
+    minw = split_part_words(proj)
+    flagged, whole, bad = 0, 0, []
+    for it in items:
+        h = str(it.get("hash", ""))
+        n = by.get(h)
+        t = store["thoughts"].get(h)
+        if n is None or t is None:
+            bad.append(h or "?")
+            continue
+        sens = sentences(n["text"])
+        parts = []
+        for pt in it.get("parts") or []:
+            try:
+                a, b = int(pt["from"]), int(pt["to"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            a, b = max(1, a), min(len(sens), b)
+            if a <= b:
+                parts.append({"idea": " ".join(str(pt.get("idea", "")).split())[:60], "from": a, "to": b})
+        parts.sort(key=lambda x: x["from"])
+        wcount = lambda pt: sum(len(sens[i - 1].split()) for i in range(pt["from"], pt["to"] + 1))  # noqa: E731
+        merged: list[dict] = []
+        for pt in parts:                      # a thin part joins the part before it (or the next one)
+            if merged and (wcount(pt) < minw or wcount(merged[-1]) < minw):
+                merged[-1] = {"idea": merged[-1]["idea"], "from": merged[-1]["from"], "to": max(pt["to"], merged[-1]["to"])}
+            else:
+                merged.append(pt)
+        if len(merged) >= 2 and wcount(merged[-1]) < minw:
+            last = merged.pop()
+            merged[-1] = {**merged[-1], "to": last["to"]}
+        t["split_checked"] = True
+        t.pop("split_dismissed", None)
+        if len(merged) >= 2 and all(wcount(pt) >= minw for pt in merged):
+            t["split"] = [pt["idea"] or f"part {i + 1}" for i, pt in enumerate(merged)]
+            t["split_at"] = [pt["from"] for pt in merged]
+            flagged += 1
+        else:
+            t.pop("split", None)
+            t.pop("split_at", None)
+            whole += 1
+    save_store(proj, store)
+    return (f"{flagged} split recommendation(s), {whole} block(s) kept whole"
+            + (f"; unknown hashes ignored: {', '.join(bad)}" if bad else ""))
+
+
+def split_task() -> str:
+    return ("Call outline_splits_pending() to get the long blocks cut into numbered sentences, decide for each whether it "
+            "should be split, and call record_splits once with all decisions (parts: [] for a block that should stay whole). "
+            "Repeat until nothing is pending. Do not edit the paper.")
 
 
 def forget(proj: Project) -> str:
