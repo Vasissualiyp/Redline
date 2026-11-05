@@ -172,11 +172,31 @@ def find(name: str) -> Path:
 
 
 # ---- new papers --------------------------------------------------------------------
-def _dest(name: str, dest: Path | None) -> Path:
+class DirOccupied(RedlineError):
+    """The directory a new paper would go into already has files in it."""
+
+    def __init__(self, dest: Path):
+        super().__init__(f"{dest} exists and is not empty")
+        self.dest = dest
+
+
+def target(name: str, dest: Path | None = None) -> Path:
     # the directory carries the Overleaf name as is ("/" cannot be part of a directory name)
-    dest = Path(dest).expanduser() if dest else papers_dir() / name.replace("/", "∕")
-    if dest.exists() and any(dest.iterdir()):
-        raise RedlineError(f"{dest} exists and is not empty")
+    return Path(dest).expanduser() if dest else papers_dir() / name.replace("/", "∕")
+
+
+def occupied(name: str, dest: Path | None = None) -> Path | None:
+    """The directory a new paper `name` would go into, if it exists and is not empty."""
+    d = target(name, dest)
+    return d if d.is_dir() and any(d.iterdir()) else None
+
+
+def _dest(name: str, dest: Path | None, overwrite: bool = False) -> Path:
+    dest = target(name, dest)
+    if occupied(name, dest):
+        if not overwrite:
+            raise DirOccupied(dest)
+        shutil.rmtree(dest)
     return dest
 
 
@@ -190,9 +210,17 @@ def _adopt(dest: Path, project: str, code_dir: str = "", verify: bool = True) ->
     return proj
 
 
-def pull_existing(name: str, dest: Path | None = None, code_dir: str = "", verify: bool = True) -> Path:
-    """Download the Overleaf project `name` into a new paper directory."""
-    dest = _dest(name, dest)
+def init_existing(name: str, dest: Path | None = None, code_dir: str = "", verify: bool = True) -> Path:
+    """Make the already existing directory a paper (like `redline init`), leaving its files as they are."""
+    dest = target(name, dest)
+    _adopt(dest, name, code_dir, verify)
+    return dest
+
+
+def pull_existing(name: str, dest: Path | None = None, code_dir: str = "", verify: bool = True,
+                  overwrite: bool = False) -> Path:
+    """Download the Overleaf project `name` into a new paper directory (overwrite: replacing a non-empty one)."""
+    dest = _dest(name, dest, overwrite)
     dest.mkdir(parents=True, exist_ok=True)
     sync.fetch_project(name, dest)
     proj = _adopt(dest, name, code_dir, verify)
@@ -203,9 +231,10 @@ def pull_existing(name: str, dest: Path | None = None, code_dir: str = "", verif
     return dest
 
 
-def create_blank(name: str, dest: Path | None = None, code_dir: str = "", verify: bool = True) -> Path:
+def create_blank(name: str, dest: Path | None = None, code_dir: str = "", verify: bool = True,
+                 overwrite: bool = False) -> Path:
     """Create an Overleaf project and a local paper with a starter main.tex, synced both ways."""
-    dest = _dest(name, dest)
+    dest = _dest(name, dest, overwrite)
     overleaf.create(name)
     dest.mkdir(parents=True, exist_ok=True)
     sync.fetch_project(name, dest)  # the new project's own files: the merge base

@@ -530,6 +530,26 @@ class Confirm(ModalScreen[bool]):
         self.dismiss(yes)
 
 
+class Occupied(ModalScreen[str]):
+    """The new paper's directory already has files: overwrite it, make a paper of it, or do nothing."""
+    BINDINGS = [Binding("o", "answer('overwrite')", "Overwrite"), Binding("i", "answer('init')", "Init"),
+                Binding("n,escape,enter", "answer('')", "Nothing")]
+    CSS = "Occupied { align: center middle; } #ask { width: 76; border: round $warning; background: $surface; padding: 1 2; }"
+
+    def __init__(self, path: Path):
+        super().__init__()
+        self.path = path
+
+    def compose(self) -> ComposeResult:
+        yield Label(f"{self.path} already exists and is not empty.\n\n"
+                    "[b]o[/] overwrite: delete it and start the paper there afresh\n"
+                    "[b]i[/] init redline in it, keeping its files\n"
+                    "[b]n[/] do nothing (default: n, esc or enter)", id="ask")
+
+    def action_answer(self, what: str) -> None:
+        self.dismiss(what)
+
+
 class Full(App):
     TITLE = "Redline: all papers"
     BINDINGS = [
@@ -1471,20 +1491,34 @@ class Full(App):
 
             def ask(yes: bool | None) -> None:
                 how, name = res
-                self.placeholders[name] = "creating on Overleaf" if how == "new" else "pulling from Overleaf"
-                self.fill()
-                self.tick()
-                self.make(how, name, verify=bool(yes))
+                def start(mode: str) -> None:
+                    if mode == "":
+                        self.say(f"{name!r}: nothing done")
+                        return
+                    self.placeholders[name] = ("initialising" if mode == "init" else
+                                               "creating on Overleaf" if how == "new" else "pulling from Overleaf")
+                    self.fill()
+                    self.tick()
+                    self.make(how, name, verify=bool(yes), mode=mode)
+                busy = registry.occupied(name)
+                if busy:
+                    self.push_screen(Occupied(busy), start)
+                else:
+                    start("make")
             self.push_screen(Confirm("Check every citation in this paper against Zotero (refcheck)?\n"
                                      "[b]y[/] yes (default for papers)   [b]n[/] no: not a project about cited literature"), ask)
         self.push_screen(NewPaper(), done)
 
     @work(thread=True, group="job")
-    def make(self, how: str, name: str, verify: bool = True) -> None:
+    def make(self, how: str, name: str, verify: bool = True, mode: str = "make") -> None:
         say = lambda s: self.call_from_thread(self.say, s)  # noqa: E731
-        say(f"{'creating' if how == 'new' else 'pulling'} {name!r} ...")
+        say(f"{'initialising' if mode == 'init' else 'creating' if how == 'new' else 'pulling'} {name!r} ...")
         try:
-            dest = (registry.create_blank if how == "new" else registry.pull_existing)(name, verify=verify)
+            if mode == "init":
+                dest = registry.init_existing(name, verify=verify)
+            else:
+                dest = (registry.create_blank if how == "new" else registry.pull_existing)(
+                    name, verify=verify, overwrite=mode == "overwrite")
             say(f"ready: {dest}")
         except RedlineError as e:
             say(f"failed: {e}")

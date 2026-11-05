@@ -273,8 +273,22 @@ def _full_cmd(a: argparse.Namespace) -> int:
     dest = Path(a.dir) if a.dir else None
     make = registry.pull_existing if a.pull else registry.create_blank
     from .spin import spinning
-    with spinning(("pulling " if a.pull else "creating ") + a.name):
-        path = make(a.name, dest, a.code_dir, not a.no_verification)
+    mode = "make"
+    busy = registry.occupied(a.name, dest)
+    if busy:
+        if not sys.stdin.isatty():
+            raise RedlineError(f"{busy} exists and is not empty")
+        ans = input(f"{busy} already exists and is not empty.\n"
+                    "[o]verwrite it, [i]nit redline in it, or do [n]othing? [n] ").strip().lower()
+        mode = {"o": "overwrite", "i": "init"}.get(ans[:1], "")
+        if not mode:
+            print("nothing done")
+            return 0
+    with spinning(("initialising " if mode == "init" else "pulling " if a.pull else "creating ") + a.name):
+        if mode == "init":
+            path = registry.init_existing(a.name, dest, a.code_dir, not a.no_verification)
+        else:
+            path = make(a.name, dest, a.code_dir, not a.no_verification, overwrite=mode == "overwrite")
     print(f"{'pulled' if a.pull else 'created'}: {path}\nopen it with: redline full open {path.name!r}")
     return 0
 
