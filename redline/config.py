@@ -307,13 +307,29 @@ def _toml_value(v) -> str:
         return "true" if v else "false"
     if isinstance(v, int):
         return str(v)
+    if isinstance(v, (list, tuple)):
+        return "[" + ", ".join(_toml_value(x) for x in v) + "]"
     return '"' + str(v).replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ") + '"'
 
 
 def set_key(root: Path, key: str, value) -> Path:
     """Set a top-level key of this paper's .redline.toml (replacing the line, else adding it at the top)."""
-    path = write_default(root)
-    text = path.read_text()
+    return _set_line(write_default(root), key, value)
+
+
+def set_global_key(key: str, value) -> Path:
+    """Set a top-level key of ~/.config/redline/config.toml; an empty value removes it."""
+    path = GLOBAL_CONFIG
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not value:
+        if path.exists():
+            path.write_text(re.sub(rf"^{re.escape(key)}\s*=.*\n?", "", path.read_text(), flags=re.M))
+        return path
+    return _set_line(path, key, value)
+
+
+def _set_line(path: Path, key: str, value) -> Path:
+    text = path.read_text() if path.exists() else ""
     line = f"{key} = {_toml_value(value)}"
     if re.search(rf"^{re.escape(key)}\s*=", text, re.M):
         text = re.sub(rf"^{re.escape(key)}\s*=.*$", lambda m: line, text, count=1, flags=re.M)

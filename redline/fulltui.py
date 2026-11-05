@@ -412,6 +412,32 @@ SWATCHES = [("red", "red"), ("orange", "orange3"), ("yellow", "yellow"), ("green
             ("grey", "bright_black")]
 
 
+class PapersFolders(ModalScreen):
+    """Where the papers live: the folders `redline full` scans, and where new papers go."""
+
+    BINDINGS = [Binding("escape", "dismiss(None)", "Cancel"), Binding("ctrl+s", "save", "Save")]
+    CSS = """
+    PapersFolders { align: center middle; }
+    #fbox { width: 88; height: auto; border: round $accent; background: $surface; padding: 1 2; }
+    #fbox Label { margin-top: 1; }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="fbox"):
+            yield Label("[b]Paper folders[/]")
+            yield Label("Folders with your papers, separated by ':' (each paper is a subfolder with a .redline.toml)")
+            yield Input(value=":".join(str(r) for r in registry.roots()), id="f-roots")
+            yield Label("Where new papers go")
+            yield Input(value=str(registry.papers_dir()), id="f-new")
+            yield Label("[dim]enter or ctrl+s saves, esc cancels[/]")
+
+    def on_input_submitted(self, ev: Input.Submitted) -> None:
+        self.action_save()
+
+    def action_save(self) -> None:
+        self.dismiss((self.query_one("#f-roots", Input).value.split(":"), self.query_one("#f-new", Input).value))
+
+
 class CategoryForm(ModalScreen):
     """A category's path ("Papers/Pop III": nested with /) and its colour, picked from swatches
     (or typed as a name / #rrggbb)."""
@@ -518,6 +544,7 @@ class Full(App):
         Binding("x", "reject", "Reject"),
         Binding("A", "accept_all", "Accept ALL"),
         Binding("e", "edit", "Edit"),
+        Binding("E", "edit_folders", "Paper folders"),
         Binding("C", "new_category", "New category"),
         Binding("J", "move_down", "Move down"),
         Binding("K", "move_up", "Move up"),
@@ -1248,6 +1275,14 @@ class Full(App):
         except Exception as e:
             self.say(f"cannot save: {e}")
         self.action_refresh()
+
+    def action_edit_folders(self) -> None:
+        def done(res) -> None:
+            if res:
+                registry.set_roots(*res)
+                self.say("paper folders saved")
+                self.load()
+        self.push_screen(PapersFolders(), done)
 
     def action_new_category(self) -> None:
         cat = self.cat_path()

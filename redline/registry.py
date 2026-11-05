@@ -58,6 +58,15 @@ def papers_dir() -> Path:
     return Path(p).expanduser() if p else roots()[0]
 
 
+def set_roots(folders: list[str], new_papers: str = "") -> None:
+    """Save the folders holding papers (and where new ones go) to the global config."""
+    folders = [f.strip() for f in folders if f.strip()]
+    if folders == [DEFAULT_ROOT]:
+        folders = []
+    config.set_global_key("roots", folders)
+    config.set_global_key("papers_dir", new_papers.strip() if new_papers.strip() != (folders or [DEFAULT_ROOT])[0] else "")
+
+
 def scan() -> list[Path]:
     seen, out = set(), []
     for r in roots():
