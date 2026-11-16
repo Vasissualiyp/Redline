@@ -1233,3 +1233,26 @@ def test_two_session_arrangement_is_saved_and_restored(tmp_path, monkeypatch):
         launcher.quit_now("redline-lay")
     finally:
         subprocess.run(["tmux", "kill-server"], capture_output=True)
+
+
+def test_plan_moves_figures_and_equations_untracked(home):
+    from redline import outline
+    from redline.state import Project
+    d = make_paper(home)
+    tex = PLAN_TEX.replace("Charlie paragraph", "\\begin{equation}\n E = mc^2 \\label{eq:e}\n\\end{equation}\n\nCharlie paragraph")
+    (d / "main.tex").write_text(tex)
+    proj = Project.open(d)
+    o = outline.build(proj)
+    eq = next(n["hash"] for n in o["nodes"] if n["kind"] == "equation")
+    order = [n["hash"] for n in o["nodes"] if n["hash"] != eq]
+    first_par = next(n["hash"] for n in o["nodes"] if n["kind"] == "paragraph")
+    order.insert(order.index(first_par) + 1, eq)
+    outline.set_plan(proj, {"order": order, "deleted": []})
+    msg = outline.apply_direct(proj)
+    src = (d / "main.tex").read_text()
+    assert msg.startswith("1 change(s)") and "untracked" in msg, msg
+    assert src.count("E = mc^2") == 1 and "\\deleted{\\begin" not in src and "\\added{\\begin" not in src
+    assert src.index("Alpha paragraph") < src.index("E = mc^2") < src.index("Bravo paragraph")
+    assert "\n\n\n" not in src
+    proj.undo()
+    assert (d / "main.tex").read_text() == tex

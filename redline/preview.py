@@ -465,6 +465,9 @@ class Pane:
             self.goto_line(int(msg["line"]), int(msg.get("col", 0)), str(msg.get("text") or ""),
                            int(msg.get("end") or 0))
             return True
+        if "follow" in msg:  # nvim's own toggle: one setting, not two that drift apart
+            self.view.follow = bool(msg["follow"])
+            return True
         if "page" in msg:
             self.release()
             self.view.page = int(msg["page"])

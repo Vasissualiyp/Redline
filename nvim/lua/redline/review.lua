@@ -571,7 +571,11 @@ local REVIEW_KEYS = {
   { "n", "P", M.push, "push to Overleaf (pull+merge, then push)" },
   { "n", "L", M.pull, "pull from Overleaf" },
   { "n", "W", function() require("redline.layout").pick() end, "pane layout preset" },
-  { "n", "f", function() core.config.follow = not core.config.follow; vim.notify("redline: PDF follow " .. (core.config.follow and "on" or "off")) end, "toggle PDF follow" },
+  { "n", "f", function()
+    core.config.follow = not core.config.follow
+    preview.set_follow(core.state().root, core.config.follow)
+    vim.notify("redline: PDF follow " .. (core.config.follow and "on" or "off"))
+  end, "toggle PDF follow" },
   { "n", "?", function() M.help() end, "help" },
   { "n", "q", function() M.exit() end, "leave review mode" },
   { "n", "<Esc>", function() M.exit() end, "leave review mode" },
@@ -659,6 +663,7 @@ function M.enter()
       end
     end,
   })
+  preview.set_follow(st.root, core.config.follow)
   core.refresh(buf)
   require("redline.statusline").update()
   vim.notify("redline: review mode (? for keys, q to leave)")

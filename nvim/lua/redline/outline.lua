@@ -51,14 +51,16 @@ local function define_highlights()
   hl("RedlineOutlineCut", { fg = "#5c6370", strikethrough = true })
   hl("RedlineOutlineMark", { fg = "#e06c75", bold = true })
   hl("RedlineOutlineFlag", { fg = "#e06c75", italic = true })
-  hl("RedlineOutlineSplit", { fg = "#e5c07b", italic = true }) -- split recommended
-  hl("RedlineOutlineSuggest", { fg = "#56b6c2", italic = true }) -- a move / merge recommended by the model
+  hl("RedlineOutlineSplit", { fg = "#ff6ac1", italic = true }) -- split recommended
+  hl("RedlineOutlineSuggest", { fg = "#8a9bff", italic = true }) -- a move / merge recommended by the model
   hl("RedlineOutlineEditNew", { fg = "#d19a66", bold = true })   -- pending edits you have not decided on
   hl("RedlineOutlineEditNote", { fg = "#c678dd", bold = true })  -- %N: waiting for the agent
   hl("RedlineOutlineEditRej", { fg = "#e06c75", bold = true })   -- marked %X
   hl("RedlineOutlineEditOk", { fg = "#98c379" })                 -- all marked %Y
   hl("RedlineOutlineComment", { fg = "#56b6c2", bold = true })   -- comments to read
   hl("RedlineOutlineHeader", { fg = "#abb2bf", bold = true, underline = true })
+  hl("RedlineOutlinePrevCut", { fg = "#e06c75", bg = "#3a2328", strikethrough = true }) -- preview: what goes away
+  hl("RedlineOutlinePrevNew", { fg = "#e8f5d0", bg = "#2f4a2a", bold = true })          -- preview: what appears
   hl("RedlineOutlineBlock", { bg = "#3e4451" })
   hl("RedlineOutlineHere", { bg = "#2c313c", bold = true }) -- the block the paper's cursor is in
 end
@@ -215,6 +217,52 @@ local function head_cols()
   return (S.hide_counts and "" or CNT_FMT:format("l", "w", "c")) .. pad_to("✎ ✉", GUT_W) .. "│ "
 end
 
+--- gz: show what the recommendation under the cursor would do, on top of the normal view.
+local function draw_preview(lines)
+  local pn = S.preview and by_hash()[S.preview]
+  if not pn then S.preview = nil; return end
+  local rows = {}
+  for r, v in pairs(S.lines) do rows[v.n.hash] = r end
+  local function strike(h)
+    local r = rows[h]
+    if r then
+      vim.api.nvim_buf_set_extmark(S.buf, ns, r, 0, { end_col = #lines[r + 1], hl_group = "RedlineOutlinePrevCut", priority = 300 })
+    end
+  end
+  local function say(r, texts, above)
+    local vl = {}
+    for _, t in ipairs(texts) do table.insert(vl, { { (" "):rep(pre_width()) .. t, "RedlineOutlinePrevNew" } }) end
+    vim.api.nvim_buf_set_extmark(S.buf, ns, r, 0, { virt_lines = vl, virt_lines_above = above or false })
+  end
+  local function label(n) return n.thought or n.title or (n.text or ""):sub(1, 60) end
+  local sg = pn.suggestions and pn.suggestions[1]
+  if sg and sg.op == "move" then
+    strike(pn.hash)
+    local tgt = sg.after and by_hash()[sg.after]
+    while tgt and not rows[tgt.hash] do -- a collapsed target: the nearest visible ancestor stands for it
+      tgt = tgt.parent and tgt.parent >= 0 and S.data.nodes[tgt.parent + 1] or nil
+    end
+    local line = "▶▶ MOVES HERE: " .. label(pn)
+    if tgt then say(rows[tgt.hash], { line }) else say(2, { line }, true) end
+  elseif sg then
+    local hs = {}
+    for _, h in ipairs(sg.hashes) do if rows[h] then table.insert(hs, h) end end
+    table.sort(hs, function(a, b) return rows[a] < rows[b] end)
+    if #hs == 0 then return end
+    local parts = {}
+    for k, h in ipairs(hs) do
+      table.insert(parts, label(by_hash()[h]))
+      if k > 1 then strike(h) end
+    end
+    say(rows[hs[1]], { "▶▶ MERGED INTO ONE: " .. table.concat(parts, "  +  ") })
+  elseif pn.split and #pn.split >= 2 then
+    strike(pn.hash)
+    local out = {}
+    for k, part in ipairs(pn.split) do table.insert(out, ("▶▶ SPLIT %d/%d: %s"):format(k, #pn.split, part)) end
+    say(rows[pn.hash], out)
+  end
+end
+
 local function render()
   if not (S.buf and vim.api.nvim_buf_is_valid(S.buf)) then return end
   local list = nodes()
@@ -318,6 +366,7 @@ local function render()
   for row, vl in pairs(virt) do
     vim.api.nvim_buf_set_extmark(S.buf, ns, row, 0, { virt_lines = vl })
   end
+  draw_preview(lines)
 end
 
 local function cur_vis()
@@ -369,12 +418,39 @@ local function show_node(n, focus)
   require("redline.preview").show(S.root, a, true, text, b)
 end
 
+--- The keys for the recommendation under the cursor, in the command line ("hovering" over it).
+local function hover_hint(n)
+  local hint
+  if S.preview then
+    hint = "PREVIEW (nothing is changed):  red struck-out = goes away, green = appears  ·  gz back to the normal view  ·  ga accept  ·  gd reject"
+  elseif n and n.suggestions and n.suggestions[1] then
+    if n.suggestions[1].op == "move" then
+      hint = "⇢ move recommended:  ga accept (into the draft plan, gA applies it)  ·  gd reject  ·  dd / p move it yourself"
+    else
+      hint = "⇢ merge recommended:  ga accept (marks the blocks)  ·  gm then merges via the agent (type an instruction to discuss)  ·  gd reject"
+    end
+  elseif n and n.split and #n.split >= 2 then
+    hint = "✂ split recommended:  ga (or gs) accept / discuss with the agent (the split is prefilled: edit it, empty = its call)  ·  gd reject"
+  end
+  if hint then
+    S.hinted = true
+    vim.api.nvim_echo({ { hint, "RedlineOutlineSuggest" } }, false, {})
+  elseif S.hinted then
+    S.hinted = false
+    vim.cmd("echo ''")
+  end
+end
+
 local function follow()
   if S.follow_timer then S.follow_timer:stop() end
   S.follow_timer = S.follow_timer or vim.uv.new_timer()
   S.follow_timer:start(120, 0, vim.schedule_wrap(function()
     local v = cur_vis()
-    if v and vim.api.nvim_get_current_win() == S.win then show_node(by_hash()[v.n.hash] or v.n, false) end
+    if v and vim.api.nvim_get_current_win() == S.win then
+      local n = by_hash()[v.n.hash] or v.n
+      show_node(n, false)
+      hover_hint(n)
+    end
   end))
 end
 
@@ -533,7 +609,7 @@ local function apply_plan()
   if n == 0 and nd == 0 then return vim.notify("redline overview: the plan changes nothing") end
   local q = ("Apply the plan: %d move(s), %d deletion(s)%s"):format(n, nd, nd > 0 and "  (deletions are tracked, you can reject them)" or "")
   -- directly = declaratively, no agent: every move / deletion becomes tracked markup in one undoable write
-  local pick = vim.fn.confirm(q, "&Directly (tracked, no agent)\n&Hand to the agent\n&Cancel", 1)
+  local pick = vim.fn.confirm(q, "&Directly (no agent; figs/eqs untracked)\n&Hand to the agent\n&Cancel", 1)
   if pick ~= 1 and pick ~= 2 then return end
   run("overview plan-set", { stdin = plan_payload() }, function(r1)
     if r1.code ~= 0 then return vim.notify("redline overview: " .. (r1.stderr or ""), vim.log.levels.ERROR) end
@@ -699,6 +775,7 @@ end
 
 -- ---- recommendations: split, move, merge ---------------------------------------------
 local function dismiss_here()
+  S.preview = nil
   local v = cur_vis()
   if not v then return end
   local n = by_hash()[v.n.hash] or v.n
@@ -739,12 +816,34 @@ local function plan_move(hash, after)
   return true
 end
 
+--- gz: toggle the preview of the recommendation under the cursor (a key vim does not use)
+local function toggle_preview()
+  if S.preview then
+    S.preview = nil
+    redraw_keep()
+    return vim.notify("redline overview: preview off")
+  end
+  local v = cur_vis()
+  local n = v and (by_hash()[v.n.hash] or v.n)
+  if not (n and ((n.suggestions and n.suggestions[1]) or (n.split and #n.split >= 2))) then
+    return vim.notify("redline overview: no recommendation under the cursor to preview")
+  end
+  S.preview = n.hash
+  redraw_keep()
+  hover_hint(n)
+end
+
 local function accept_suggestion()
+  S.preview = nil
   local v = cur_vis()
   if not v then return end
   local n = by_hash()[v.n.hash] or v.n
   local sg = n.suggestions and n.suggestions[1]
-  if not sg then return vim.notify("redline overview: no move / merge recommended here") end
+  if not sg then
+    -- a split recommendation: same as gs (the recommended split is prefilled in the prompt)
+    if n.split and #n.split >= 2 then return edit_task("split") end
+    return vim.notify("redline overview: no split / move / merge recommended here")
+  end
   if sg.op == "move" then
     if not plan_move(n.hash, sg.after) then return vim.notify("redline overview: the target is gone; gr reloads", vim.log.levels.WARN) end
     redraw_keep()
@@ -883,7 +982,8 @@ local function help()
         { key = "gB", mode = "n", desc = "check the LONG blocks (200+ words) for splits: each is read in full, in numbered sentences" },
         { key = "gv", mode = "n", desc = "review the whole sequence of thoughts: recommend moves and merges (also runs after the thoughts)" },
         { key = "gv", mode = "x", desc = "in visual mode: recommendations only for the SELECTED part (a section brings its content), the rest is context" },
-        { key = "ga", mode = "n", desc = "accept the recommendation here: a move goes into the draft plan, a merge marks the blocks" },
+        { key = "ga", mode = "n", desc = "accept the recommendation here: a move goes into the draft plan, a merge marks the blocks, a split asks the agent (prefilled)" },
+        { key = "gz", mode = "n", desc = "PREVIEW the recommendation under the cursor: struck out = goes away, green = appears; gz again = back" },
         { key = "gd", mode = "n", desc = "dismiss them: they stay away until the block is re-run (gR)" },
         { key = "gR", mode = "n", desc = "run this block through the model again (new thought, new recommendation)" },
         { key = "]s [s", mode = "n", desc = "next / previous ✂ split recommendation" } } },
@@ -970,6 +1070,7 @@ local function setup_buffer()
     desc = "redline overview: recommendations for the selected part" })
   map("gR", rerun_block, "run this block through the model again")
   map("gd", dismiss_here, "dismiss the recommendations here")
+  map("gz", toggle_preview, "preview the recommendation under the cursor (again = back)")
   map("ga", accept_suggestion, "accept the recommended move / merge")
   map("]f", function() next_flag(1) end, "next flag")
   map("[f", function() next_flag(-1) end, "previous flag")

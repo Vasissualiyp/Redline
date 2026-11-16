@@ -905,23 +905,31 @@ def apply_direct(proj: Project, origin: str = "overview plan") -> str:
             if src is None:
                 skipped.append(f"«{m['text'][:40]}»: not found any more")
                 continue
+            # figures, tables, equations (anything that cannot be struck out) move as a plain, untracked cut and paste
+            plain = src.kind in ("figure", "table", "equation", "env") or not author.can_strike(d, src.start, src.end)
             try:
                 if m["after"] is None:
                     first = next((b for b in bl.values() if b.start > src.end or b.start < src.start), None)
                     first = min((b for b in bl.values() if b is not src), key=lambda b: b.start, default=None)
                     if first is None:
                         continue
-                    edits = author.move_span(d, src.start, src.end, first.start, after=False, comment="outline plan",
-                                             trail="\n\n")
+                    if plain:
+                        edits = author.plain_move_span(d, src.start, src.end, first.start, trail="\n\n")
+                    else:
+                        edits = author.move_span(d, src.start, src.end, first.start, after=False, comment="outline plan",
+                                                 trail="\n\n")
                 else:
                     dst = bl.get(m["after"])
                     if dst is None:
                         skipped.append(f"«{m['text'][:40]}»: its destination block is gone")
                         continue
                     lead = "\n" if src.kind == "item" and dst.kind == "item" else "\n\n"
-                    edits = author.move_span(d, src.start, src.end, dst.end, after=True, comment="outline plan", lead=lead)
+                    if plain:
+                        edits = author.plain_move_span(d, src.start, src.end, dst.end, lead=lead)
+                    else:
+                        edits = author.move_span(d, src.start, src.end, dst.end, after=True, comment="outline plan", lead=lead)
                 text = ops.apply(text, edits)
-                done.append(f"moved «{m['text'][:50]}»")
+                done.append(f"moved «{m['text'][:50]}»" + (" (untracked: cannot be struck out)" if plain else ""))
             except RedlineError as e:
                 skipped.append(f"«{m['text'][:40]}»: {str(e).splitlines()[0][:100]}")
         for dl in dels:

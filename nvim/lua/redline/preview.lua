@@ -32,6 +32,26 @@ function M.show_cursor(root, force)
   M.show(root, pos[1], force, vim.api.nvim_get_current_line())
 end
 
+--- Tell the PDF pane whether it follows the cursor (nvim's `f`), so its own flag cannot disagree.
+function M.set_follow(root, on)
+  local sock = root and M.socket(root, "preview")
+  if not (sock and vim.uv.fs_stat(sock)) then
+    return
+  end
+  local pipe = vim.uv.new_pipe(false)
+  pipe:connect(sock, function(err)
+    if err then
+      pipe:close()
+      return
+    end
+    pipe:write(vim.json.encode({ follow = on }) .. "\n", function()
+      pipe:shutdown(function()
+        pipe:close()
+      end)
+    end)
+  end)
+end
+
 function M.show(root, line, force, text, end_line)
   if not root then
     return

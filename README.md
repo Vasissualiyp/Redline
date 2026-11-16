@@ -533,7 +533,7 @@ in the PDF pane**; and the other way round, moving through the paper moves the o
   show `⇅`, the header counts moves and deletions; `u` undoes as usual, `gr` discards the plan). The paper is untouched
   until `gA`, which offers two ways: **directly** (declaratively, no agent: every move becomes a tracked
   `\deleted` here + `\added` there with a "Moved to / Moved here from" footnote, every deletion a tracked deletion, all in
-  one write you undo with one `u`; blocks holding pending changes or other things that cannot be done mechanically are skipped
+  one write you undo with one `u`; figures, tables and equations, which cannot be struck out, are moved as a plain untracked cut-and-paste in the same write; blocks holding pending changes or other things that cannot be done mechanically are skipped
   and listed) or **hand it to the agent** (tracked `propose_move` / `propose_delete`, and it may add a transition).
 - **Merge / split:** `m` marks blocks, `gm` asks the agent to merge the marked ones (or this one and the next) into one paragraph,
   `gs` to split the block under the cursor into several; both take a free-text instruction and produce tracked edits. The new

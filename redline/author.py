@@ -377,6 +377,39 @@ def move_span(doc: Document, s: int, e: int, pos: int, *, after: bool = True, co
     return out
 
 
+def can_strike(doc: Document, s: int, e: int) -> bool:
+    """Whether doc.src[s:e] can be struck out (no environment, display math or footnote in it)."""
+    try:
+        _check_strikeable(doc.src[s:e])
+    except RedlineError:
+        return False
+    return True
+
+
+def plain_move_span(doc: Document, s: int, e: int, pos: int, *, lead: str = "", trail: str = "") -> list[TextEdit]:
+    r"""Untracked move of doc.src[s:e] to offset pos, for what cannot be struck out (figures, tables,
+    equations, anything with a footnote). Pending changes lying wholly inside the span travel with it.
+    The blank lines around the old place are closed up; lead/trail go around the text at pos."""
+    for it in doc.items:
+        lo, hi = it.start, it.full_end
+        inside = s <= lo and hi <= e
+        if not inside and (s < hi and lo < e):
+            raise RedlineError(f"text to move cuts through pending change {it.label} ({it.id}); accept/reject it first")
+        if lo < pos < hi:
+            raise RedlineError(f"destination lies inside pending change {it.label} ({it.id})")
+    if s <= pos <= e:
+        raise RedlineError("the destination lies inside the text being moved")
+    _check_span(doc, pos, pos, what="destination")
+    src = doc.src
+    cut = e
+    if s == 0 or src[s - 1] == "\n":   # take the gap after the block with it, so no double blank line is left
+        while cut < len(src) and src[cut] in " \t\r\n":
+            cut += 1
+        if src[cut:].startswith("\\end{document}"):
+            cut = e + (1 if src[e:e + 1] == "\n" else 0)
+    return [TextEdit(s, cut, ""), TextEdit(pos, pos, lead + src[s:e] + trail)]
+
+
 def delete_span(doc: Document, s: int, e: int, comment: str | None = None) -> list[TextEdit]:
     """Tracked deletion of doc.src[s:e] (what propose_delete does once it has located the text)."""
     _check_span(doc, s, e, what="old_text")
