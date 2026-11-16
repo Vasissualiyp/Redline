@@ -67,6 +67,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dir", help="new: directory for the paper (default: next to your other papers)")
     p.add_argument("--code-dir", default="", help="new: analysis code directory (default: analysis/ inside the paper)")
     p.add_argument("--no-verification", action="store_true", help="new: not a project whose citations are refchecked")
+    p.add_argument("--local", action="store_true", help="new/init: a local-only paper: no Overleaf project, no sync")
+    p.add_argument("--draft", choices=["paper", "survey"], help="new: also scaffold draft.toml (initial drafting, see `redline draft`)")
+    p.add_argument("--topic", default="", help="new --draft: the topic")
     p.add_argument("--two-sessions", action="store_true", help="open: nvim + agent and the PDF view in two tmux sessions")
     p.add_argument("--json", action="store_true")
     p.add_argument("--no-attach", action="store_true", help="open: start the session without attaching")
@@ -74,6 +77,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("init", help="create .redline.toml, ignore entries and the Overleaf merge base")
     p.add_argument("--code-dir", default="", help="analysis/plotting code directory")
     p.add_argument("--no-sync", action="store_true", help="skip downloading the Overleaf base")
+    p.add_argument("--local", action="store_true", help="a local-only paper: never synced with Overleaf (implies --no-sync)")
     p.add_argument("--no-verification", action="store_true",
                    help="this project does not cite papers that must be refchecked against Zotero")
 
@@ -87,6 +91,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--op", choices=["merge", "split"], help="edit-message")
     p.add_argument("--hashes", help="edit-message: comma separated block hashes")
     p.add_argument("--instruction", default="", help="edit-message: what you want")
+
+    p = sub.add_parser("draft", help="initial drafting: lit review, then a first-draft paper or a claims survey")
+    p.add_argument("action", nargs="?", default="status",
+                   choices=["status", "init", "review", "approve", "write", "run"])
+    p.add_argument("--topic", default="", help="init: the topic")
+    p.add_argument("--goal", choices=["paper", "survey"], default="", help="init: paper (default) or survey")
+    p.add_argument("--model", help="review/write: a [models] entry (default: the brief's model, else draft_model)")
+    p.add_argument("--force", action="store_true", help="write: replace a main file that already has text")
 
     p = sub.add_parser("sessions", help="switch this running paper between one tmux session and two (PDF alone)")
     p.add_argument("to", nargs="?", choices=["one", "two", "toggle", "status"], default="toggle")
@@ -217,13 +229,13 @@ def _categories_cmd(a: argparse.Namespace) -> int:
         print("removed " + ", ".join(gone))
     else:  # set NAME key=value
         key, _, val = (a.extra or "").partition("=")
-        if key not in ("category", "notes", "enforce_verification", "cross_paper_access", "single_editor", "two_sessions", "code_dir",
+        if key not in ("category", "notes", "enforce_verification", "cross_paper_access", "single_editor", "two_sessions", "local_only", "code_dir",
                        "overleaf_project") or not _:
             print("usage: redline full set NAME key=value (category, notes, enforce_verification, code_dir, "
                   "overleaf_project)", file=sys.stderr)
             return 2
         root = registry.find(a.name)
-        config.set_key(root, key, val.lower() in ("true", "1", "yes", "on") if key in ("enforce_verification", "cross_paper_access", "single_editor", "two_sessions") else val)
+        config.set_key(root, key, val.lower() in ("true", "1", "yes", "on") if key in ("enforce_verification", "cross_paper_access", "single_editor", "two_sessions", "local_only") else val)
         print(f"{root.name}: {key} = {val}")
     return 0
 
@@ -271,7 +283,7 @@ def _full_cmd(a: argparse.Namespace) -> int:
         print("redline full new: give the paper's name", file=sys.stderr)
         return 2
     dest = Path(a.dir) if a.dir else None
-    make = registry.pull_existing if a.pull else registry.create_blank
+    make = registry.pull_existing if a.pull else registry.create_local if a.local else registry.create_blank
     from .spin import spinning
     mode = "make"
     busy = registry.occupied(a.name, dest)
@@ -286,10 +298,14 @@ def _full_cmd(a: argparse.Namespace) -> int:
             return 0
     with spinning(("initialising " if mode == "init" else "pulling " if a.pull else "creating ") + a.name):
         if mode == "init":
-            path = registry.init_existing(a.name, dest, a.code_dir, not a.no_verification)
+            path = registry.init_existing(a.name, dest, a.code_dir, not a.no_verification, a.local)
         else:
             path = make(a.name, dest, a.code_dir, not a.no_verification, overwrite=mode == "overwrite")
     print(f"{'pulled' if a.pull else 'created'}: {path}\nopen it with: redline full open {path.name!r}")
+    if a.draft:
+        from . import draft as D
+        from .state import Project as P
+        print(D.init(P.open(path), a.topic, a.draft))
     return 0
 
 
@@ -399,6 +415,24 @@ def _run(a: argparse.Namespace) -> int:
             else:
                 print(OA.flow(proj, a.model))
         return 0
+    if a.cmd == "draft":
+        from . import draft as D
+        from . import draft_agent as DA
+        from .state import Project as P
+        proj = P.open()
+        if a.action == "status":
+            print(D.status(proj))
+        elif a.action == "init":
+            print(D.init(proj, a.topic, a.goal))
+        elif a.action == "approve":
+            print(D.approve(proj))
+        else:
+            from .spin import spinning
+            with spinning("the model is working (a lit review takes a while)"):
+                fn = {"review": DA.review, "write": lambda *x: DA.write(*x, force=a.force),
+                      "run": lambda *x: DA.run_all(*x, force=a.force)}[a.action]
+                print(fn(proj, a.model))
+        return 0
     if a.cmd == "sessions":
         from . import config
         from . import launcher as LA
@@ -430,7 +464,10 @@ def _run(a: argparse.Namespace) -> int:
             verify = input("Check every citation against Zotero (refcheck, the default)? "
                            "Say n only if this project is not about cited literature. [Y/n] "
                            ).strip().lower() not in ("n", "no")
-        path = config.write_default(root, a.code_dir, enforce_verification=verify)
+        path = config.write_default(root, a.code_dir, enforce_verification=verify, local_only=a.local)
+        if a.local:
+            config.set_key(root, "local_only", True)
+            a.no_sync = True
         print(f"config: {path}" + ("" if verify else "  (refcheck enforcement OFF; `redline verification on` re-enables)"))
         changed = sync.ensure_ignores(root)
         if changed:
@@ -547,8 +584,9 @@ def _sync_cmd(s, a: argparse.Namespace) -> int:
     if a.action == "auto":
         cfg = s.proj.cfg
         if a.enabled:
-            print(json.dumps({"enabled": cfg.single_editor, "seconds": cfg.auto_sync_seconds, "poll": cfg.auto_sync_poll}))
-            return 0 if cfg.single_editor else 1
+            on = cfg.single_editor and not cfg.local_only
+            print(json.dumps({"enabled": on, "seconds": cfg.auto_sync_seconds, "poll": cfg.auto_sync_poll}))
+            return 0 if on else 1
         if not cfg.single_editor:
             print("single_editor is off for this paper (redline full set PAPER single_editor=true)")
             return 5

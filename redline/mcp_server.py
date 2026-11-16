@@ -10,6 +10,7 @@ from mcp.server.mcpserver import Context, MCPServer
 from .model import RedlineError
 from .service import Service
 from . import codeaccess as _code
+from . import draft as _draft
 from . import others as _others
 from . import outline as _outline
 from .state import Project
@@ -53,6 +54,9 @@ reject every suggestion from their editor. Rules:
 - Overview: outline_pending() / record_thoughts() write one-sentence thoughts per block (never edit the paper
   for that), outline_overview() / record_flow() judge the narrative flow, outline_plan() is the human's
   draft reordering to be executed with propose_move.
+- Drafting (only when the paper has a draft.toml brief): draft_brief() lists what the human supplied; read it with
+  draft_list / draft_read / draft_search (read-only), search the literature with lit_search, add papers with lit_add,
+  record notes with draft_note, write the draft with draft_write. Only what you read in a PDF may be stated about a paper.
 - Pending changes are addressed by id (stable hash like a3f9c2) or label (C12;
   labels renumber after every edit, ids do not).
 - Run compile() after a batch of edits and fix what it reports. lint(fix=true) fixes
@@ -195,6 +199,57 @@ def code_read(path: str, first_line: int | None = None, last_line: int | None = 
 def code_search(query: str, glob: str = "**/*", regex: bool = False) -> str:
     """Search the code in code_dir (case-insensitive): where a number, a column or a figure is produced."""
     return _safe(lambda: _code.search(svc().proj, query, glob, regex))
+
+
+# ---- initial drafting (draft.toml) ---------------------------------------------------
+@mcp.tool()
+def draft_brief() -> str:
+    """The drafting brief: topic, goal (paper or survey), the human's notes, and every supplied file or folder."""
+    return _safe(lambda: _draft.overview(svc().proj))
+
+
+@mcp.tool()
+def draft_list(path: str = "") -> str:
+    """Files under a supplied path (results, literature, template, earlier papers); no path = the overview."""
+    return _safe(lambda: _draft.listing(svc().proj, path))
+
+
+@mcp.tool()
+def draft_read(path: str, first_line: int | None = None, last_line: int | None = None) -> str:
+    """Read a supplied file (text, .tex, .bib, .csv, or a PDF as text) with line numbers; at most 600 lines at once."""
+    return _safe(lambda: _draft.read(svc().proj, path, first_line, last_line))
+
+
+@mcp.tool()
+def draft_search(query: str, path: str = "", regex: bool = False) -> str:
+    """Search the supplied materials (case-insensitive), or only one path of them."""
+    return _safe(lambda: _draft.search(svc().proj, query, path, regex))
+
+
+@mcp.tool()
+def lit_search(query: str, source: str = "openalex", limit: int = 10) -> str:
+    """Search the open literature (source: openalex, arxiv or ads, as the brief enables) for papers on a query."""
+    return _safe(lambda: _draft.lit_search(svc().proj, query, source, limit))
+
+
+@mcp.tool()
+def lit_add(key: str, title: str, authors: list[str], year: str, venue: str = "", doi: str = "",
+            eprint: str = "") -> str:
+    """Add a paper found by lit_search to references.bib and to Zotero with its PDF. Needs a doi or arXiv eprint."""
+    return _safe(lambda: _draft.lit_add(svc().proj, key, title, authors, year, venue, doi, eprint))
+
+
+@mcp.tool()
+def draft_note(name: str, text: str) -> str:
+    """Write a lit-review note to draft/<name>.md (name: litreview, outline or claims). Works in a read-only run."""
+    return _safe(lambda: _draft.write_note(svc().proj, name, text))
+
+
+@mcp.tool()
+def draft_write(text: str) -> str:
+    """Write the complete draft (a whole LaTeX document): the main file for goal paper, survey.tex for goal survey.
+    Only after the human approved the lit review. Reports citations that are not in a .bib."""
+    return _safe(lambda: _draft.write_tex(svc().proj, text))
 
 
 # ---- the other papers (read-only) -----------------------------------------------

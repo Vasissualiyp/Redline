@@ -76,7 +76,15 @@ def ensure_ignores(root: Path, extra: list[str] | None = None) -> list[str]:
     return changed
 
 
+def require_overleaf(proj: Project) -> None:
+    if proj.cfg.local_only:
+        raise RedlineError(f"{proj.cfg.project_name} is a local-only paper (local_only = true in .redline.toml): "
+                           "there is no Overleaf project to sync with. To connect it, create the project on Overleaf, "
+                           "set overleaf_project and local_only = false, then `redline sync init`.")
+
+
 def _ols(proj: Project) -> list[str]:
+    require_overleaf(proj)
     return ols_command(proj.cfg.ols)
 
 
@@ -154,6 +162,7 @@ def _files(d: Path) -> list[str]:
 
 def init_base(proj: Project) -> SyncReport:
     """Take a fresh Overleaf snapshot as the merge base (first run)."""
+    require_overleaf(proj)
     remote = download(proj)
     base = proj.dir / "base"
     if base.exists():
@@ -184,6 +193,7 @@ def snapshot_base(proj: Project) -> None:
 
 
 def pull(proj: Project) -> SyncReport:
+    require_overleaf(proj)
     base = proj.dir / "base"
     if not base.exists():
         raise RedlineError("no merge base yet: run `redline sync init` once (or the MCP tool "
@@ -239,6 +249,7 @@ def pull(proj: Project) -> SyncReport:
 
 
 def push(proj: Project, force: bool = False, skip_pull: bool = False, fresh_ok: bool = False) -> SyncReport:
+    require_overleaf(proj)
     ensure_ignores(proj.cfg.root)
     rep = SyncReport() if skip_pull else pull(proj)
     if rep.conflicts:
@@ -295,6 +306,8 @@ def auto(proj: Project) -> tuple[str, str]:
     Overleaf unchanged: push local edits. Overleaf ahead, or both changed without conflicts:
     merge, then push. Real conflicts, lint/compile errors: nothing is touched, the state says so."""
     import fcntl
+    if proj.cfg.local_only:
+        return "idle", "local-only paper: nothing to sync"
     proj.dir.mkdir(parents=True, exist_ok=True)
     with open(proj.dir / "autosync.lock", "w") as lock:
         try:
@@ -429,6 +442,7 @@ def check(proj: Project, reuse: bool = False) -> SyncCheck:
     local copy; anything Overleaf merely caught up with (plain `ols -l`, plots
     uploaded by sync.sh) just refreshes the snapshot.
     """
+    require_overleaf(proj)
     base = proj.dir / "base"
     if not base.exists():
         raise RedlineError("no merge base yet: run `redline sync init` once")

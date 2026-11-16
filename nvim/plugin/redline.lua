@@ -14,6 +14,7 @@ local subcommands = {
   push = function() require("redline.review").push() end,
   pull = function() require("redline.review").pull() end,
   overview = function(args) require("redline.outline").open(args and args[2] == "tab" and "tab" or "side") end,
+  draft = function(args) require("redline.draft").run(args[2] or "status") end,
   sessions = function(args) require("redline.review").sessions(args and args[2] or "toggle") end,
   full = function() require("redline.review").home() end,
   acceptall = function() require("redline.review").accept_all() end,
@@ -53,6 +54,9 @@ vim.api.nvim_create_user_command("Redline", function(o)
 end, {
   nargs = "*",
   complete = function(arg, line)
+    if line:match("^%S+%s+draft%s") then
+      return { "status", "init", "brief", "review", "approve", "write", "run" }
+    end
     if line:match("^%S+%s+lint%s") then
       return { "fix" }
     end

@@ -540,6 +540,49 @@ in the PDF pane**; and the other way round, moving through the paper moves the o
   paragraphs get fresh thoughts on the next `r`.
 - `?` inside lists the keys.
 
+## Local-only papers (no Overleaf)
+
+A paper does not need an Overleaf project. `local_only = true` in `.redline.toml` makes it a local paper:
+`redline full new NAME --local` (a starter `main.tex`, nothing on Overleaf; add `--draft paper|survey` to also
+set up initial drafting), `ctrl+l` in the TUI's New paper dialog, `redline init --local` in an existing folder
+of `.tex` files, or `redline full set NAME local_only=true` for a paper that already exists.
+
+Everything else works as for any paper: tracked changes, review, the overview, verification, the agent, compile.
+What changes: `pull`, `push`, `sync` and `sync init` refuse with a message saying the paper is local-only,
+automatic sync (`single_editor`) does nothing, the `redline full` list shows `local` in the Overleaf column, and
+quitting does not warn about files "not on Overleaf yet". To connect it later: create the project on Overleaf,
+set `overleaf_project` and `local_only = false`, then `redline sync init`.
+
+## Initial drafting (`redline draft`)
+
+Start a paper (or just explore a topic) from your own materials. You write a brief, the agent does a
+literature review, you check it, then it writes the first draft.
+
+1. `redline draft init --topic "..." [--goal paper|survey]` (or `redline full new NAME --draft paper`, or
+   `:Redline draft init`) writes `draft.toml`: topic, `results_dir`, `zotero_collection`, `literature` (PDFs,
+   `.bib` files or folders not in Zotero), `prior_papers` (names from `redline full`, or `.tex` paths), a
+   `template`, free-text `notes`, the `search` sources (openalex, arxiv, ads), `max_new_papers`, `model`.
+2. `redline draft review` (`:Redline draft review`): a headless agent (`draft_model`, default `claude`; the
+   brief's `model` overrides it) reads everything you supplied, searches the open literature, adds the papers
+   it needs to `references.bib` and Zotero (with PDFs) and writes `draft/litreview.md` plus `draft/outline.md`
+   (goal `paper`) or `draft/claims.md` (goal `survey`: each claim with bib key, page and exact quote). It cannot
+   touch your .tex files.
+3. Checkpoint: read and edit `draft/*.md`, then `redline draft approve`. `checkpoint = false` in the brief skips
+   this; `redline draft run` then does review and write in one go.
+4. `redline draft write`: goal `paper` writes the first draft into the main `.tex` (from your template, in your
+   earlier papers' style; numbers only from the results; undoable with `undo`); goal `survey` writes `survey.tex`,
+   short cited claim summaries by theme with open questions. A main file that already holds text is replaced only
+   with `--force`.
+
+From the TUI (`redline full`): `w` on a paper opens the drafting screen (`p`/`s` create the paper or survey
+brief, `r` lit review, `a` approve, `w` write, `W` write replacing existing text; the long steps run as background
+jobs with progress in the log). In the New paper dialog (`n`), `ctrl+d` creates a new Overleaf project and sets it
+up for drafting, and `ctrl+l` does the same for a local-only paper (see below). In nvim: `:Redline draft ...`.
+
+The agent reports citations that are in no `.bib`, or that the lit review never mentioned. Quote-level checking of
+every citation is not part of the draft: run the usual verification (`redline verification`, `% VERIFY`) on it.
+`redline draft status` shows the phase and the next step.
+
 ## The agent and the analysis code
 
 `code_dir` was only the directory of the "code" tmux window, so an agent could not know where the plotting code is. Now the

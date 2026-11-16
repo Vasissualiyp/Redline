@@ -224,7 +224,8 @@ class NewPaper(ModalScreen):
 
     BINDINGS = [Binding("escape", "dismiss(None)", "Cancel"),
                 Binding("down,ctrl+n,ctrl+j", "move(1)", show=False), Binding("up,ctrl+p,ctrl+k", "move(-1)", show=False),
-                Binding("ctrl+o", "create", "Create new")]
+                Binding("ctrl+o", "create", "Create new"), Binding("ctrl+d", "create_draft", "Create + draft"),
+                Binding("ctrl+l", "create_local", "Local only")]
     CSS = """
     NewPaper { align: center middle; }
     #box { width: 90; height: 80%; border: round $accent; background: $surface; padding: 1 2; }
@@ -234,7 +235,9 @@ class NewPaper(ModalScreen):
     def compose(self) -> ComposeResult:
         with Vertical(id="box"):
             yield Label("[b]Pull from Overleaf[/]: type to filter, [b]enter[/] pulls the highlighted project (up/down move).\n"
-                        "[b]ctrl+o[/] creates a [b]new[/] Overleaf project named like the text you typed (asks first).")
+                        "[b]ctrl+o[/] creates a [b]new[/] Overleaf project named like the text you typed (asks first);\n"
+                        "[b]ctrl+d[/] does that and sets it up for [b]initial drafting[/] (lit review + first draft or survey);\n"
+                        "[b]ctrl+l[/] makes a [b]local-only[/] paper: no Overleaf project, no sync (optionally with drafting).")
             yield Input(placeholder="Overleaf project name", id="name")
             yield OptionList(id="remote")
             yield Label("esc cancels", id="hint")
@@ -305,7 +308,7 @@ class NewPaper(ModalScreen):
     def on_option_list_option_selected(self, ev: OptionList.OptionSelected) -> None:
         self._pull()
 
-    def action_create(self) -> None:
+    def action_create(self, goal: str = "") -> None:
         name = self.query_one("#name", Input).value.strip()
         if not name:
             return
@@ -315,8 +318,28 @@ class NewPaper(ModalScreen):
 
         def go(yes: bool | None) -> None:
             if yes:
-                self.dismiss(("new", name))
-        self.app.push_screen(Confirm(f"Create a NEW Overleaf project called [b]{escape(name)}[/]?"), go)
+                self.dismiss(("new", name, goal) if goal else ("new", name))
+        self.app.push_screen(Confirm(f"Create a NEW Overleaf project called [b]{escape(name)}[/]"
+                                     + (f" and draft a [b]{goal}[/] in it" if goal else "") + "?"), go)
+
+    def action_create_local(self) -> None:
+        name = self.query_one("#name", Input).value.strip()
+        if not name:
+            return
+
+        def chosen(goal: str | None) -> None:
+            if goal:
+                self.dismiss(("local", name, "" if goal == "blank" else goal))
+        self.app.push_screen(GoalChoice(blank=True), chosen)
+
+    def action_create_draft(self) -> None:
+        if not self.query_one("#name", Input).value.strip():
+            return
+
+        def chosen(goal: str | None) -> None:
+            if goal:
+                self.action_create(goal)
+        self.app.push_screen(GoalChoice(), chosen)
 
 
 class EditPaper(ModalScreen):
@@ -530,6 +553,54 @@ class Confirm(ModalScreen[bool]):
         self.dismiss(yes)
 
 
+class GoalChoice(ModalScreen[str]):
+    """Initial drafting: a first-draft paper, or an exploratory survey (short claim summaries)."""
+    BINDINGS = [Binding("p", "answer('paper')", "Paper"), Binding("s", "answer('survey')", "Survey"),
+                Binding("b", "answer('blank')", "Blank"), Binding("escape", "answer('')", "Cancel")]
+    CSS = "GoalChoice { align: center middle; } #ask { width: 76; border: round $accent; background: $surface; padding: 1 2; }"
+
+    def __init__(self, blank: bool = False):
+        super().__init__()
+        self.blank = blank
+
+    def compose(self) -> ComposeResult:
+        yield Label("Draft from your own materials (a brief, draft.toml, you fill in):\n\n"
+                    "[b]p[/] a first-draft [b]paper[/]: lit review, then the paper\n"
+                    "[b]s[/] an exploratory [b]survey[/]: lit review, then short claim summaries (survey.tex)\n"
+                    + ("[b]b[/] just a [b]blank[/] paper, no drafting\n" if self.blank else "") + "[b]esc[/] cancel", id="ask")
+
+    def action_answer(self, what: str) -> None:
+        self.dismiss(what)
+
+
+class DraftScreen(ModalScreen[str]):
+    """Where this paper is in initial drafting, and the next step (the keys run `redline draft ...`)."""
+    BINDINGS = [Binding("p", "answer('init paper')", "Init paper brief"), Binding("s", "answer('init survey')", "Init survey brief"),
+                Binding("r", "answer('review')", "Lit review"), Binding("a", "answer('approve')", "Approve"),
+                Binding("w", "answer('write')", "Write"), Binding("W", "answer('write force')", "Write (replace text)"),
+                Binding("escape,q", "answer('')", "Close")]
+    CSS = "DraftScreen { align: center middle; } #ask { width: 90; border: round $accent; background: $surface; padding: 1 2; }"
+
+    def __init__(self, root: Path):
+        super().__init__()
+        self.root = root
+
+    def compose(self) -> ComposeResult:
+        from . import draft
+        from .state import Project
+        try:
+            status = draft.status(Project.open(self.root))
+        except RedlineError as e:
+            status = str(e)
+        yield Label(f"[b]Initial drafting: {escape(self.root.name)}[/]\n\n{escape(status)}\n\n"
+                    "[b]p[/]/[b]s[/] create draft.toml (paper / survey)   [b]r[/] lit review   [b]a[/] approve the notes\n"
+                    "[b]w[/] write the draft   [b]W[/] write, replacing existing text   [b]esc[/] close\n"
+                    "[dim]edit draft.toml and draft/*.md in your editor between the steps[/]", id="ask")
+
+    def action_answer(self, what: str) -> None:
+        self.dismiss(what)
+
+
 class Occupied(ModalScreen[str]):
     """The new paper's directory already has files: overwrite it, make a paper of it, or do nothing."""
     BINDINGS = [Binding("o", "answer('overwrite')", "Overwrite"), Binding("i", "answer('init')", "Init"),
@@ -564,6 +635,7 @@ class Full(App):
         Binding("x", "reject", "Reject"),
         Binding("A", "accept_all", "Accept ALL"),
         Binding("e", "edit", "Edit"),
+        Binding("w", "draft", "Initial drafting"),
         Binding("E", "edit_folders", "Paper folders"),
         Binding("C", "new_category", "New category"),
         Binding("J", "move_down", "Move down"),
@@ -1490,16 +1562,18 @@ class Full(App):
                 return
 
             def ask(yes: bool | None) -> None:
-                how, name = res
+                how, name, *rest = res
+                goal = rest[0] if rest else ""
                 def start(mode: str) -> None:
                     if mode == "":
                         self.say(f"{name!r}: nothing done")
                         return
                     self.placeholders[name] = ("initialising" if mode == "init" else
+                                               "creating locally" if how == "local" else
                                                "creating on Overleaf" if how == "new" else "pulling from Overleaf")
                     self.fill()
                     self.tick()
-                    self.make(how, name, verify=bool(yes), mode=mode)
+                    self.make(how, name, verify=bool(yes), mode=mode, goal=goal)
                 busy = registry.occupied(name)
                 if busy:
                     self.push_screen(Occupied(busy), start)
@@ -1510,16 +1584,21 @@ class Full(App):
         self.push_screen(NewPaper(), done)
 
     @work(thread=True, group="job")
-    def make(self, how: str, name: str, verify: bool = True, mode: str = "make") -> None:
+    def make(self, how: str, name: str, verify: bool = True, mode: str = "make", goal: str = "") -> None:
         say = lambda s: self.call_from_thread(self.say, s)  # noqa: E731
-        say(f"{'initialising' if mode == 'init' else 'creating' if how == 'new' else 'pulling'} {name!r} ...")
+        say(f"{'initialising' if mode == 'init' else 'creating' if how in ('new', 'local') else 'pulling'} {name!r} ...")
         try:
             if mode == "init":
-                dest = registry.init_existing(name, verify=verify)
+                dest = registry.init_existing(name, verify=verify, local=how == "local")
             else:
-                dest = (registry.create_blank if how == "new" else registry.pull_existing)(
+                dest = (registry.create_local if how == "local" else
+                        registry.create_blank if how == "new" else registry.pull_existing)(
                     name, verify=verify, overwrite=mode == "overwrite")
             say(f"ready: {dest}")
+            if goal:
+                from . import draft
+                from .state import Project
+                say(draft.init(Project.open(dest), goal=goal))
         except RedlineError as e:
             say(f"failed: {e}")
         self.call_from_thread(self.finish_placeholder, name)
@@ -1549,6 +1628,27 @@ class Full(App):
         finally:
             self.busy(key, None)
         self.call_from_thread(self.action_refresh)
+
+    def action_draft(self) -> None:
+        root = self.paper if self.level == "changes" else (self.selected().path if self.selected() else None)
+        if not root:
+            return
+
+        def chosen(what: str | None) -> None:
+            if not what:
+                return
+            from . import draft, draft_agent
+            if what.startswith("init"):
+                goal = what.split()[1]
+                self._job("draft init", lambda proj: draft.init(proj, goal=goal))
+            elif what == "review":
+                self._job("draft review", lambda proj: draft_agent.review(proj))
+            elif what == "approve":
+                self._job("draft approve", lambda proj: draft.approve(proj))
+            else:
+                force = what.endswith("force")
+                self._job("draft write", lambda proj: draft_agent.write(proj, force=force))
+        self.push_screen(DraftScreen(root), chosen)
 
     def action_pull(self) -> None:
         from . import sync

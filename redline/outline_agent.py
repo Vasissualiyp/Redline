@@ -14,7 +14,8 @@ from .model import RedlineError
 from .state import Project
 
 
-def run(proj: Project, task: str, model: str | None = None, stream=None, timeout: int = 900) -> str:
+def run(proj: Project, task: str, model: str | None = None, stream=None, timeout: int = 900,
+        readonly: bool = True) -> str:
     name = (model or proj.cfg.outline_model or "pane").strip()
     if name == "pane":
         from . import quick
@@ -26,7 +27,7 @@ def run(proj: Project, task: str, model: str | None = None, stream=None, timeout
     problem = agentpick.check(proj, entry)
     if problem:
         raise RedlineError(f"{entry.get('label', name)}: {problem}")
-    agentpick.prepare(proj, entry, readonly=True)  # thoughts only: the paper cannot be edited by this run
+    agentpick.prepare(proj, entry, readonly=readonly)  # thoughts only (the default): the paper cannot be edited by this run
     cmd = agentpick.headless_command(entry, task)
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)

@@ -389,7 +389,7 @@ def quit_status(session: str) -> dict:
     proj = Project.open(root)
     proj.flush_editor()
     base = proj.dir / "base"
-    if base.exists():
+    if base.exists() and not proj.cfg.local_only:
         ignore = _sync._ignore_patterns(root)
         st["unpushed"] = [rel for rel in _sync._files(root)
                           if not _sync._ignored(rel, ignore) and not _sync._same(root / rel, base / rel)]

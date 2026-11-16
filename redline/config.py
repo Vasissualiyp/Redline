@@ -48,6 +48,9 @@ cross_paper_access = true
 # Only you edit this paper (no coauthors): sync with Overleaf by itself, in the background, as
 # soon as the paper has been quiet for auto_sync_seconds, and look for Overleaf edits every
 # auto_sync_poll seconds. Conflicts are never resolved automatically.
+# Local only: this paper has no Overleaf project. Pull / push / sync are refused, auto-sync and the
+# "not on Overleaf yet" warning on quit are off. (`redline full new NAME --local`.)
+local_only = {local_only}
 single_editor = false
 auto_sync_seconds = 20
 auto_sync_poll = 120
@@ -58,6 +61,8 @@ two_sessions = false
 # The overview (`gO` in nvim): which [models] entry writes the one-line "thoughts" and runs the flow
 # check, headless. A cheap model is plenty: "deepseek", "qwen-local", ... or "pane" for the agent pane.
 outline_model = "deepseek"
+# The model that does the lit review and writes the first draft (`redline draft`): an entry of [models].
+draft_model = "claude"
 # How long a thought may be, in words (the model is told; much longer ones are refused).
 outline_words = 10
 # A block shorter than this many words is never flagged "split recommended", however many ideas it lists.
@@ -148,8 +153,10 @@ class Config:
     enforce_verification: bool = True
     cross_paper_access: bool = True
     single_editor: bool = False
+    local_only: bool = False
     two_sessions: bool = False
     outline_model: str = "deepseek"
+    draft_model: str = "claude"
     outline_words: int = 10
     outline_split_words: int = 200
     outline_split_part_words: int = 60
@@ -232,13 +239,15 @@ def load(root: Path | None = None) -> Config:
     cfg = Config(root=root, main=main)
     for k in ("code_dir", "agent", "agent_kind", "layout", "tmux_quit_key", "ols", "overleaf_project",
               "keep_comment_regex", "pre_push", "evidence_collection", "tmux_model_key", "category", "notes",
-              "outline_model"):
+              "outline_model", "draft_model"):
         if k in data:
             setattr(cfg, k, str(data[k]))
     if "enforce_verification" in data:
         cfg.enforce_verification = bool(data["enforce_verification"])
     if "two_sessions" in data:
         cfg.two_sessions = bool(data["two_sessions"])
+    if "local_only" in data:
+        cfg.local_only = bool(data["local_only"])
     if "single_editor" in data:
         cfg.single_editor = bool(data["single_editor"])
     if "outline_review" in data:
@@ -269,7 +278,7 @@ def load(root: Path | None = None) -> Config:
 
 
 def write_default(root: Path, code_dir: str = "", overleaf_project: str = "",
-                  enforce_verification: bool = True) -> Path:
+                  enforce_verification: bool = True, local_only: bool = False) -> Path:
     """Create .redline.toml. Without a code directory, `analysis/` inside the paper
     is created for it (kept out of Overleaf by sync.ensure_ignores)."""
     path = root / CONFIG_NAME
@@ -285,7 +294,8 @@ def write_default(root: Path, code_dir: str = "", overleaf_project: str = "",
                 with contextlib.suppress(OSError):
                     target.mkdir(parents=True, exist_ok=True)
         path.write_text(DEFAULT_TOML.format(main=detect_main(root), code_dir=code_dir, overleaf_project=overleaf_project,
-                                            enforce_verification="true" if enforce_verification else "false"))
+                                            enforce_verification="true" if enforce_verification else "false",
+                                            local_only="true" if local_only else "false"))
     return path
 
 

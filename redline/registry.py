@@ -94,7 +94,7 @@ class Info:
     path: Path
     pending: int | None = None   # tracked changes waiting for a decision
     unrated: int | None = None   # of those, without a %Y/%N/%X marker
-    sync: str = ""               # "in sync" | "local edits" | "no base"
+    sync: str = ""               # "in sync" | "local edits" | "no base" | "local" (no Overleaf project)
     running: bool = False
     active: float = 0.0          # unix time of the last edit
     error: str = ""
@@ -133,7 +133,9 @@ def info(root: Path, running: set[str] | None = None) -> Info:
         it.pending = len(items)
         it.unrated = sum(1 for i in items if i.marker is None)
         base = proj.dir / "base" / proj.cfg.main
-        if not base.exists():
+        if proj.cfg.local_only:
+            it.sync = "local"
+        elif not base.exists():
             it.sync = "no base"
         else:
             it.sync = "in sync" if base.read_bytes() == main.read_bytes() else "local edits"
@@ -200,9 +202,9 @@ def _dest(name: str, dest: Path | None, overwrite: bool = False) -> Path:
     return dest
 
 
-def _adopt(dest: Path, project: str, code_dir: str = "", verify: bool = True) -> Project:
+def _adopt(dest: Path, project: str, code_dir: str = "", verify: bool = True, local: bool = False) -> Project:
     """.redline.toml, ignores and the MCP config for a downloaded or new paper."""
-    config.write_default(dest, code_dir, project if project != dest.name else "", verify)
+    config.write_default(dest, code_dir, "" if local or project == dest.name else project, verify, local_only=local)
     sync.ensure_ignores(dest)
     proj = Project.open(dest)
     from .launcher import write_mcp_config
@@ -210,10 +212,22 @@ def _adopt(dest: Path, project: str, code_dir: str = "", verify: bool = True) ->
     return proj
 
 
-def init_existing(name: str, dest: Path | None = None, code_dir: str = "", verify: bool = True) -> Path:
+def init_existing(name: str, dest: Path | None = None, code_dir: str = "", verify: bool = True,
+                  local: bool = False) -> Path:
     """Make the already existing directory a paper (like `redline init`), leaving its files as they are."""
     dest = target(name, dest)
-    _adopt(dest, name, code_dir, verify)
+    _adopt(dest, name, code_dir, verify, local)
+    return dest
+
+
+def create_local(name: str, dest: Path | None = None, code_dir: str = "", verify: bool = True,
+                 overwrite: bool = False) -> Path:
+    """A new paper that only lives on this machine: a starter main.tex, no Overleaf project, no sync."""
+    dest = _dest(name, dest, overwrite)
+    dest.mkdir(parents=True, exist_ok=True)
+    (dest / "main.tex").write_text(BLANK_PAPER % {"title": name})
+    proj = _adopt(dest, name, code_dir, verify, local=True)
+    preamble.ensure(proj.cfg.main_path)
     return dest
 
 
